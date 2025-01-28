@@ -54,7 +54,7 @@ async fn handle_tts(
                 }))
             } else {
                 let output_path = format!(
-                    "output_{}.wav",
+                    "tmp/output_{}.wav",
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
