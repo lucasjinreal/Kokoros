@@ -19,7 +19,7 @@ pub struct TTSKoko {
 
 impl TTSKoko {
     const MODEL_URL: &str =
-        "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-v0_19.onnx";
+        "https://huggingface.co/hexgrad/kLegacy/resolve/main/v0.19/kokoro-v0_19.onnx";
     const JSON_DATA_F: &str = "data/voices.json";
 
     pub const SAMPLE_RATE: u32 = 24000;
