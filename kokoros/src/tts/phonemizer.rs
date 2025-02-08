@@ -2,6 +2,7 @@ use crate::tts::normalize;
 use crate::tts::vocab::VOCAB;
 use lazy_static::lazy_static;
 use regex::Regex;
+use lazy_phonememize::phonememizer::{LazyPhonemizer, PhonemeOutputType};
 
 lazy_static! {
     static ref PHONEME_PATTERNS: Regex = Regex::new(r"(?<=[a-zɹː])(?=hˈʌndɹɪd)").unwrap();
@@ -26,9 +27,12 @@ impl EspeakBackend {
     }
 
     fn phonemize(&self, text: &[String]) -> Option<Vec<String>> {
-        // Implementation would go here
-        // This is where you'd integrate with actual espeak bindings
-        todo!("Implement actual phonemization")
+       let g2p = LazyPhonemizer::init(Some(&self.language)).unwrap(); 
+        if text.len() == 0 {
+            None
+        } else {
+           Some(text.iter().map(|_string| g2p.convert_to_phonemes(_string, PhonemeOutputType::ASCII).unwrap_or(String::from(""))).collect())
+        }
     }
 }
 
