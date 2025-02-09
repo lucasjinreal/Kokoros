@@ -253,7 +253,7 @@ impl TTSKoko {
             for &sample in &audio {
                 writer.write_sample(sample)?;
             }
-        } else if stereo_phase_shift > 0.0 {
+        } else if stereo_phase_shift != 0.0 {
             let shifted_audio = apply_phase_shift(&audio, stereo_phase_shift);
 
             for i in 0..audio.len() {
