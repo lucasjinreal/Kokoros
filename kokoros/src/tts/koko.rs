@@ -16,6 +16,7 @@ pub struct TTSOpts<'a> {
     pub save_path: &'a str,
     pub mono: bool,
     pub speed: f32,
+    pub stereo_phase_shift: f32,
 }
 
 #[derive(Clone)]
@@ -24,6 +25,48 @@ pub struct TTSKoko {
     model_path: String,
     model: Arc<ort_koko::OrtKoko>,
     styles: HashMap<String, Vec<[[f32; 256]; 1]>>,
+}
+
+// Function to apply phase shift using an all-pass filter.
+// This function takes an audio buffer (slice of f32) and a phase shift value (f32) as input.
+// It processes the audio using a first-order all-pass filter to introduce a phase shift,
+// effectively creating a stereo widening effect when applied to one channel of a stereo audio signal.
+// The all-pass filter works by delaying the input signal and feeding it back into the output,
+// which alters the phase response without significantly affecting the amplitude response.
+//
+// Args:
+//   audio: A slice of f32 representing the input audio data.
+//   phase_shift: A f32 value between -1.0 and 1.0 representing the desired phase shift.
+//                This value determines the filter coefficient 'k', which controls the amount of phase shift.
+//
+// Returns:
+//   A new Vec<f32> containing the phase-shifted audio data.  The length of the output vector
+//   is the same as the length of the input audio slice.
+//
+// The all-pass filter is implemented using the following difference equation:
+//   y[n] = k * x[n] + y[n-1] - k * x[n-1]
+// where:
+//   y[n] is the current output sample
+//   x[n] is the current input sample
+//   y[n-1] is the previous output sample (initialized to 0.0)
+//   x[n-1] is the previous input sample (initialized to 0.0)
+//   k is the all-pass filter coefficient, equal to the phase_shift parameter.
+fn apply_phase_shift(audio: &[f32], phase_shift: f32) -> Vec<f32> {
+    let mut output = Vec::with_capacity(audio.len());
+    let mut y1 = 0.0;
+    let mut x1 = 0.0;
+
+    // all-pass filter coefficient
+    let k = phase_shift;
+
+    for &x in audio {
+        let y = k * x + y1 - k * x1;
+        output.push(y);
+        x1 = x;
+        y1 = y;
+    }
+
+    output
 }
 
 impl TTSKoko {
@@ -189,39 +232,43 @@ impl TTSKoko {
             save_path,
             mono,
             speed,
+            stereo_phase_shift,
         }: TTSOpts,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let audio = self.tts_raw_audio(&txt, lan, style_name, speed)?;
 
         // Save to file
+        let channels = if mono { 1 } else { 2 };
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate: TTSKoko::SAMPLE_RATE,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+
+        let mut writer = hound::WavWriter::create(save_path, spec)?;
+
         if mono {
-            let spec = hound::WavSpec {
-                channels: 1,
-                sample_rate: TTSKoko::SAMPLE_RATE,
-                bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            };
-
-            let mut writer = hound::WavWriter::create(save_path, spec)?;
+            // Mono output
             for &sample in &audio {
                 writer.write_sample(sample)?;
             }
-            writer.finalize()?;
+        } else if stereo_phase_shift > 0.0 {
+            let shifted_audio = apply_phase_shift(&audio, stereo_phase_shift);
+
+            for i in 0..audio.len() {
+                writer.write_sample(audio[i])?; // Left channel (original)
+                writer.write_sample(shifted_audio[i])?; // Right channel (phase-shifted)
+            }
         } else {
-            let spec = hound::WavSpec {
-                channels: 2,
-                sample_rate: TTSKoko::SAMPLE_RATE,
-                bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            };
-
-            let mut writer = hound::WavWriter::create(save_path, spec)?;
+            // Stereo from mono (duplicate to both channels)
             for &sample in &audio {
                 writer.write_sample(sample)?;
                 writer.write_sample(sample)?;
             }
-            writer.finalize()?;
         }
+
+        writer.finalize()?;
         eprintln!("Audio saved to {}", save_path);
         Ok(())
     }
