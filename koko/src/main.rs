@@ -116,6 +116,10 @@ struct Cli {
     #[arg(long = "mono", default_value_t = false)]
     mono: bool,
 
+    /// Apply a phase shift to the stereo audio (-1.0 to 1.0)
+    #[arg(long = "stereo-phase-shift", value_name = "STEREO_PHASE_SHIFT")]
+    stereo_phase_shift: Option<f32>,
+
     /// Initial silence duration in tokens
     #[arg(long = "initial-silence", value_name = "INITIAL_SILENCE")]
     initial_silence: Option<usize>,
@@ -134,8 +138,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             speed,
             initial_silence,
             mono,
+            stereo_phase_shift,
             mode,
         } = Cli::parse();
+
+        if stereo_phase_shift != None {
+           if stereo_phase_shift != Some(0.0) && mono {
+            eprintln!(
+                "Warning: Stereo phase shift is only supported in stereo mode. Ignoring stereo phase shift."
+            );
+           }
+           if stereo_phase_shift < Some(-1.0) || stereo_phase_shift > Some(1.0) {
+            eprintln!(
+                "Warning: Stereo phase shift must be between -1.0 and 1.0. Clipping stereo phase shift to this range."
+            );
+           }
+        }
+
 
         let tts = TTSKoko::new(&model_path).await;
 
@@ -159,6 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         save_path: &save_path,
                         mono,
                         speed,
+                        stereo_phase_shift: stereo_phase_shift.unwrap_or(0.0).clamp(-1.0, 1.0),
                         initial_silence,
                     })?;
                 }
@@ -172,6 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     save_path: &save_path,
                     mono,
                     speed,
+                    stereo_phase_shift: stereo_phase_shift.unwrap_or(0.0).clamp(-1.0, 1.0),
                     initial_silence,
                 })?;
             }
