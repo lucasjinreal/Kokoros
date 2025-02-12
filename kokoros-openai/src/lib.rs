@@ -54,6 +54,9 @@ struct SpeechRequest {
 
     #[serde(default)]
     speed: Speed,
+
+    #[serde(default)]
+    initial_silence: Option<usize>,
 }
 
 pub async fn create_server(tts: TTSKoko) -> Router {
@@ -94,10 +97,11 @@ async fn handle_tts(
         voice: Voice(voice),
         response_format: _,
         speed: Speed(speed),
+        initial_silence,
     }): Json<SpeechRequest>,
 ) -> Result<Vec<u8>, SpeechError> {
     let raw_audio = tts
-        .tts_raw_audio(&input, "en-us", &voice, speed)
+        .tts_raw_audio(&input, "en-us", &voice, speed, initial_silence)
         .map_err(SpeechError::Koko)?;
     let mut wav_data = Vec::default();
     let header = WavHeader::new(1, TTSKoko::SAMPLE_RATE, 32);

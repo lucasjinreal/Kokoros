@@ -120,6 +120,10 @@ struct Cli {
     #[arg(long = "stereo-phase-shift", value_name = "STEREO_PHASE_SHIFT")]
     stereo_phase_shift: Option<f32>,
 
+    /// Initial silence duration in tokens
+    #[arg(long = "initial-silence", value_name = "INITIAL_SILENCE")]
+    initial_silence: Option<usize>,
+
     #[command(subcommand)]
     mode: Mode,
 }
@@ -132,6 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             model_path,
             style,
             speed,
+            initial_silence,
             mono,
             stereo_phase_shift,
             mode,
@@ -174,6 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         mono,
                         speed,
                         stereo_phase_shift: stereo_phase_shift.unwrap_or(0.0).clamp(-1.0, 1.0),
+                        initial_silence,
                     })?;
                 }
             }
@@ -187,6 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     mono,
                     speed,
                     stereo_phase_shift: stereo_phase_shift.unwrap_or(0.0).clamp(-1.0, 1.0),
+                    initial_silence,
                 })?;
             }
 
@@ -222,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     // Process the line and get audio data
-                    match tts.tts_raw_audio(&stripped_line, &lan, &style, speed) {
+                    match tts.tts_raw_audio(&stripped_line, &lan, &style, speed, initial_silence) {
                         Ok(raw_audio) => {
                             // Write the raw audio samples directly
                             write_audio_chunk(&mut stdout, &raw_audio)?;

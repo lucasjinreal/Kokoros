@@ -17,6 +17,7 @@ pub struct TTSOpts<'a> {
     pub mono: bool,
     pub speed: f32,
     pub stereo_phase_shift: f32,
+    pub initial_silence: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -188,6 +189,7 @@ impl TTSKoko {
         lan: &str,
         style_name: &str,
         speed: f32,
+        initial_silence: Option<usize>,
     ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         // Split text into appropriate chunks
         let chunks = self.split_text_into_chunks(txt, 500); // Using 500 to leave 12 tokens of margin
@@ -202,7 +204,11 @@ impl TTSKoko {
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
                 .join("");
 
-            let tokens = vec![tokenize(&phonemes)];
+            let mut tokens = tokenize(&phonemes);
+            for _ in 0..initial_silence.unwrap_or(0) {
+                tokens.insert(0, 30);
+            }
+            let tokens = vec![tokens];
 
             match self.model.infer(tokens, styles.clone(), speed) {
                 Ok(chunk_audio) => {
@@ -233,9 +239,10 @@ impl TTSKoko {
             mono,
             speed,
             stereo_phase_shift,
+            initial_silence,
         }: TTSOpts,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let audio = self.tts_raw_audio(&txt, lan, style_name, speed)?;
+        let audio = self.tts_raw_audio(&txt, lan, style_name, speed, initial_silence)?;
 
         // Save to file
         let channels = if mono { 1 } else { 2 };

@@ -39,6 +39,14 @@ impl OrtKoko {
         // 1,N 1,256
         // [[0, 56, 51, 142, 156, 69, 63, 3, 16, 61, 4, 16, 156, 51, 4, 16, 62, 77, 156, 51, 86, 5, 0]]
 
+        // Prepend 3 tokens to the first entry, to workaround initial silence issue
+        // Make sure the first token is 0, I think it might be important?
+        let mut tokens = tokens;
+        let mut first_entry = tokens[0].clone();
+        let initial_pause = vec![0, 30, 30, 30];
+        first_entry.splice(0..1, initial_pause);
+        tokens[0] = first_entry;
+
         let shape = [tokens.len(), tokens[0].len()];
         let tokens_flat: Vec<i64> = tokens.into_iter().flatten().collect();
         let tokens = Tensor::from_array((shape, tokens_flat))?;
