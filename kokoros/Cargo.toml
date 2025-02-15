@@ -16,6 +16,7 @@ tokio = { version = "1.0", features = ["fs", "io-util"] }
 
 # ONNX Runtime dependencies
 ort = { version = "2.0.0-rc.4", default-features = false }
+lazy_phonememize = { git = "https://github.com/heabeounMKTO/lazy_phonememize", version = "0.1.1-rc" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "2.0.0-rc.4", features = ["coreml"] }
