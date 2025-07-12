@@ -144,7 +144,7 @@ struct Cli {
     initial_silence: Option<usize>,
 
     /// Number of TTS instances for parallel processing
-    #[arg(long = "instances", value_name = "INSTANCES", default_value_t = 2)]
+    #[arg(long = "instances", value_name = "INSTANCES", default_value_t = 1)]
     instances: usize,
 
     #[command(subcommand)]
@@ -220,6 +220,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             Mode::OpenAI { ip, port } => {
+                // Warn about CPU performance with multiple instances
+                #[cfg(not(feature = "cuda"))]
+                if instances > 1 {
+                    tracing::warn!("Multiple TTS instances ({}) on CPU may cause memory bandwidth contention", instances);
+                    tracing::warn!("Consider using --instances 1 for optimal CPU performance");
+                }
+
                 // Create multiple independent TTS instances for parallel processing
                 let mut tts_instances = Vec::new();
                 for i in 0..instances {
