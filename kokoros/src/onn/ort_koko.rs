@@ -24,8 +24,12 @@ impl ort_base::OrtBase for OrtKoko {
 }
 impl OrtKoko {
     pub fn new(model_path: String) -> Result<Self, String> {
+        Self::new_with_instances(model_path, 1)
+    }
+
+    pub fn new_with_instances(model_path: String, total_instances: usize) -> Result<Self, String> {
         let mut instance = OrtKoko { sess: None };
-        instance.load_model(model_path)?;
+        instance.load_model_with_instances(model_path, total_instances)?;
         Ok(instance)
     }
 
@@ -41,7 +45,7 @@ impl OrtKoko {
 
         let shape = [tokens.len(), tokens[0].len()];
         let tokens_flat: Vec<i64> = tokens.into_iter().flatten().collect();
-        
+
         let debug_prefix = format_debug_prefix(request_id, instance_id);
         let chunk_info = chunk_number.map(|n| format!("Chunk: {}, ", n)).unwrap_or_default();
         tracing::debug!("{} {}inference input: tokens_shape={:?}, tokens_count={}, styles_shape={:?}", debug_prefix, chunk_info, shape, tokens_flat.len(), [styles.len(), styles[0].len()]);

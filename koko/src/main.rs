@@ -144,7 +144,7 @@ struct Cli {
     initial_silence: Option<usize>,
 
     /// Number of TTS instances for parallel processing
-    #[arg(long = "instances", value_name = "INSTANCES", default_value_t = 1)]
+    #[arg(long = "instances", value_name = "INSTANCES", default_value_t = 2)]
     instances: usize,
 
     #[command(subcommand)]
@@ -160,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         )
         .init();
-    
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let Cli {
@@ -231,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut tts_instances = Vec::new();
                 for i in 0..instances {
                     tracing::info!("Initializing TTS instance [{}] ({}/{})", format!("{:02x}", i), i + 1, instances);
-                    let instance = TTSKoko::new(&model_path, &data_path).await;
+                    let instance = TTSKoko::new_with_instances(&model_path, &data_path, instances).await;
                     tts_instances.push(instance);
                 }
                 let app = kokoros_openai::create_server(tts_instances).await;

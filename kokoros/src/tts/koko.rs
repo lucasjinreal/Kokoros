@@ -74,7 +74,15 @@ impl TTSKoko {
         Self::from_config(model_path, voices_path, InitConfig::default()).await
     }
 
+    pub async fn new_with_instances(model_path: &str, voices_path: &str, total_instances: usize) -> Self {
+        Self::from_config_with_instances(model_path, voices_path, InitConfig::default(), total_instances).await
+    }
+
     pub async fn from_config(model_path: &str, voices_path: &str, cfg: InitConfig) -> Self {
+        Self::from_config_with_instances(model_path, voices_path, cfg, 1).await
+    }
+
+    pub async fn from_config_with_instances(model_path: &str, voices_path: &str, cfg: InitConfig, total_instances: usize) -> Self {
         if !Path::new(model_path).exists() {
             utils::fileio::download_file_from_url(cfg.model_url.as_str(), model_path)
                 .await
@@ -88,7 +96,7 @@ impl TTSKoko {
         }
 
         let model = Arc::new(Mutex::new(
-            ort_koko::OrtKoko::new(model_path.to_string())
+            ort_koko::OrtKoko::new_with_instances(model_path.to_string(), total_instances)
                 .expect("Failed to create Kokoro TTS model"),
         ));
         // TODO: if(not streaming) { model.print_info(); }
@@ -694,7 +702,7 @@ impl TTSKokoParallel {
                 num_instances
             );
             let model = Arc::new(Mutex::new(
-                ort_koko::OrtKoko::new(model_path.to_string())
+                ort_koko::OrtKoko::new_with_instances(model_path.to_string(), num_instances)
                     .expect("Failed to create Kokoro TTS model"),
             ));
             models.push(model);
