@@ -41,7 +41,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Break words used for chunk splitting
@@ -485,12 +485,14 @@ async fn handle_tts(
     let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
         .await
         .map_err(|e| {
-            error!("Error reading request body: {:?}", e);
+            let colored_request_id = get_colored_request_id_with_relative(&request_id, request_start);
+            error!("{} Error reading request body: {:?}", colored_request_id, e);
             SpeechError::Mp3Conversion(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
         })?;
 
     let speech_request: SpeechRequest = serde_json::from_slice(&bytes).map_err(|e| {
-        error!("JSON parsing error: {:?}", e);
+        let colored_request_id = get_colored_request_id_with_relative(&request_id, request_start);
+        error!("{} JSON parsing error: {:?}", colored_request_id, e);
         SpeechError::Mp3Conversion(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
     })?;
 
@@ -986,11 +988,36 @@ async fn request_id_middleware(
 ) -> axum::response::Response {
     let method = request.method().clone();
     let uri = request.uri().path().to_string();
+    let query = request.uri().query().unwrap_or("").to_string();
     let user_agent = request
         .headers()
         .get("user-agent")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("-")
+        .to_string();
+    let content_type = request
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let content_length = request
+        .headers()
+        .get("content-length")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let accept = request
+        .headers()
+        .get("accept")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let remote_addr = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("127.0.0.1")
         .to_string();
 
     let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
@@ -998,16 +1025,73 @@ async fn request_id_middleware(
     let colored_request_id = get_colored_request_id_with_relative(&request_id, start);
     request.extensions_mut().insert((request_id.clone(), start));
 
+    // Enhanced request logging with detailed headers and timing
     info!(
-        "{} {} {} \"{}\"",
-        colored_request_id, method, uri, user_agent
+        "{} REQUEST {} {} {} | UA: \"{}\" | CT: {} | CL: {} | Accept: {} | From: {}",
+        colored_request_id, method, uri, 
+        if query.is_empty() { "".to_string() } else { format!("?{}", query) },
+        user_agent, content_type, content_length, accept, remote_addr
     );
 
+    // Log request body for TTS endpoints (truncated for privacy)
+    if uri.contains("/audio/speech") && content_length > 0 && content_length < 10000 {
+        debug!(
+            "{} REQUEST_BODY size={} bytes, content_type={}",
+            colored_request_id, content_length, content_type
+        );
+    }
+
     let response = next.run(request).await;
-    let _latency = start.elapsed();
+    let latency = start.elapsed();
+    let status = response.status();
+    
+    // Extract response content length if available
+    let response_size = response
+        .headers()
+        .get("content-length")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    
+    let response_content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
 
     let colored_request_id_response = get_colored_request_id_with_relative(&request_id, start);
-    info!("{} {}", colored_request_id_response, response.status());
+    
+    // Enhanced response logging with timing and size metrics
+    if status.is_success() {
+        info!(
+            "{} RESPONSE {} | {:.3}ms | {} bytes | CT: {}",
+            colored_request_id_response, status, latency.as_millis(), response_size, response_content_type
+        );
+    } else if status.is_client_error() {
+        error!(
+            "{} CLIENT_ERROR {} | {:.3}ms | UA: \"{}\" | From: {}",
+            colored_request_id_response, status, latency.as_millis(), user_agent, remote_addr
+        );
+    } else if status.is_server_error() {
+        error!(
+            "{} SERVER_ERROR {} | {:.3}ms | Method: {} {} | UA: \"{}\"",
+            colored_request_id_response, status, latency.as_millis(), method, uri, user_agent
+        );
+    } else {
+        info!(
+            "{} RESPONSE {} | {:.3}ms",
+            colored_request_id_response, status, latency.as_millis()
+        );
+    }
+
+    // Log slow requests (>5 seconds) as warnings
+    if latency.as_secs() >= 5 {
+        warn!(
+            "{} SLOW_REQUEST {:.3}s | {} {} | UA: \"{}\"",
+            colored_request_id_response, latency.as_secs_f64(), method, uri, user_agent
+        );
+    }
 
     response
 }

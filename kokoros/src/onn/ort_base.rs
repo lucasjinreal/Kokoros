@@ -1,4 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "cuda")]
 use ort::execution_providers::cuda::CUDAExecutionProvider;
