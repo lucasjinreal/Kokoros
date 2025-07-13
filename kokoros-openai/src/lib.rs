@@ -405,14 +405,28 @@ struct ModelsResponse {
     data: Vec<ModelObject>,
 }
 
-pub async fn create_server(tts_instances: Vec<TTSKoko>) -> Router {
+#[derive(Clone)]
+struct AppState {
+    tts_instances: Arc<Vec<TTSKoko>>,
+    tts_single: TTSKoko,
+    default_speed: f32,
+}
+
+pub async fn create_server(tts_instances: Vec<TTSKoko>, default_speed: f32) -> Router {
     info!("Starting TTS server with {} instances", tts_instances.len());
+    info!("Global default speed: {}", default_speed);
 
     // Use first instance for compatibility with non-streaming endpoints
     let tts_single = tts_instances
         .first()
         .cloned()
         .expect("At least one TTS instance required");
+
+    let app_state = AppState {
+        tts_instances: Arc::new(tts_instances),
+        tts_single: tts_single.clone(),
+        default_speed,
+    };
 
     Router::new()
         .route("/", get(handle_home))
@@ -422,7 +436,7 @@ pub async fn create_server(tts_instances: Vec<TTSKoko>) -> Router {
         .route("/v1/models/{model}", get(handle_model))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(CorsLayer::permissive())
-        .with_state((tts_single, tts_instances))
+        .with_state(app_state)
 }
 
 pub use axum::serve;
@@ -469,7 +483,7 @@ async fn handle_home() -> &'static str {
 }
 
 async fn handle_tts(
-    State((tts_single, tts_instances)): State<(TTSKoko, Vec<TTSKoko>)>,
+    State(app_state): State<AppState>,
     request: axum::extract::Request,
 ) -> Result<Response, SpeechError> {
     let (request_id, request_start) = request
@@ -500,11 +514,21 @@ async fn handle_tts(
         input,
         voice: Voice(voice),
         response_format,
-        speed: Speed(speed),
+        speed: Speed(mut speed),
         initial_silence,
         stream,
         ..
     } = speech_request;
+
+    // Use default speed if speed was not provided in request
+    if speed == 1.0 {  // Default serde value
+        speed = app_state.default_speed;
+        debug!("{} Using global default speed: {} (request had no speed parameter)", 
+               get_colored_request_id_with_relative(&request_id, request_start), speed);
+    } else {
+        debug!("{} Using request speed: {} (overriding global default: {})", 
+               get_colored_request_id_with_relative(&request_id, request_start), speed, app_state.default_speed);
+    }
 
     // OpenAI-compliant behavior: Stream by default, only send complete file if stream: false
     let should_stream = stream.unwrap_or(true); // Default to streaming like OpenAI
@@ -517,7 +541,7 @@ async fn handle_tts(
 
     if should_stream {
         return handle_tts_streaming(
-            tts_instances,
+            (*app_state.tts_instances).clone(),
             input,
             voice,
             response_format,
@@ -530,7 +554,7 @@ async fn handle_tts(
     }
 
     // Non-streaming mode (existing implementation)
-    let raw_audio = tts_single
+    let raw_audio = app_state.tts_single
         .tts_raw_audio(
             &input,
             "en-us",
@@ -914,9 +938,9 @@ async fn handle_tts_streaming(
 }
 
 async fn handle_voices(
-    State((tts_single, _tts_instances)): State<(TTSKoko, Vec<TTSKoko>)>,
+    State(app_state): State<AppState>,
 ) -> Json<VoicesResponse> {
-    let voices = tts_single.get_available_voices();
+    let voices = app_state.tts_single.get_available_voices();
     Json(VoicesResponse { voices })
 }
 

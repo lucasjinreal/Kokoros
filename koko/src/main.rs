@@ -362,7 +362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let instance = TTSKoko::new_with_instances(&model_path, &data_path, instances).await;
                     tts_instances.push(instance);
                 }
-                let app = kokoros_openai::create_server(tts_instances).await;
+                let app = kokoros_openai::create_server(tts_instances, speed).await;
                 let addr = SocketAddr::from((ip, port));
                 let binding = tokio::net::TcpListener::bind(&addr).await?;
                 tracing::info!("Starting OpenAI-compatible HTTP server on {}", addr);
