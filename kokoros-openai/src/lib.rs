@@ -113,23 +113,25 @@ fn split_text_into_speech_chunks(text: &str, words_per_chunk: usize) -> Vec<Stri
     }
 
     // Final processing: Move break words from end of chunks to beginning of next chunk
-    for i in 0..final_chunks.len() - 1 {
-        let current_chunk = &final_chunks[i];
-        let words: Vec<&str> = current_chunk.trim().split_whitespace().collect();
+    if final_chunks.len() > 1 {
+        for i in 0..final_chunks.len() - 1 {
+            let current_chunk = &final_chunks[i];
+            let words: Vec<&str> = current_chunk.trim().split_whitespace().collect();
 
-        if let Some(last_word) = words.last() {
-            // Check if last word is a break word (case insensitive)
-            if BREAK_WORDS.contains(&last_word.to_lowercase().as_str()) && words.len() > 1 {
-                // Only move if it won't create an empty chunk (need more than 1 word)
-                let new_current = words[..words.len() - 1].join(" ");
+            if let Some(last_word) = words.last() {
+                // Check if last word is a break word (case insensitive)
+                if BREAK_WORDS.contains(&last_word.to_lowercase().as_str()) && words.len() > 1 {
+                    // Only move if it won't create an empty chunk (need more than 1 word)
+                    let new_current = words[..words.len() - 1].join(" ");
 
-                // Add break word to beginning of next chunk
-                let next_chunk = &final_chunks[i + 1];
-                let new_next = format!("{} {}", last_word, next_chunk);
+                    // Add break word to beginning of next chunk
+                    let next_chunk = &final_chunks[i + 1];
+                    let new_next = format!("{} {}", last_word, next_chunk);
 
-                // Update the chunks
-                final_chunks[i] = new_current;
-                final_chunks[i + 1] = new_next;
+                    // Update the chunks
+                    final_chunks[i] = new_current;
+                    final_chunks[i + 1] = new_next;
+                }
             }
         }
     }
