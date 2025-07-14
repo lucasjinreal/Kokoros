@@ -303,13 +303,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mode,
         } = args;
 
-        let tts = TTSKoko::new(&model_path, &data_path).await;
+        // Create TTS instance only for CLI modes, not for OpenAI server mode
+        let tts = match &mode {
+            Mode::OpenAI { .. } => None,
+            _ => {
+                // CLI modes always use single instance for optimal performance
+                if instances > 1 {
+                    tracing::info!("CLI mode: Using single instance for optimal performance (--instances {} ignored, WIP: to be supported in future)", instances);
+                }
+                Some(TTSKoko::new(&model_path, &data_path, 1).await)
+            },
+        };
 
         match mode {
             Mode::File {
                 input_path,
                 save_path_format,
             } => {
+                let tts = tts.unwrap();
                 let file_content = fs::read_to_string(input_path)?;
                 for (i, line) in file_content.lines().enumerate() {
                     let stripped_line = line.trim();
@@ -331,6 +342,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             Mode::Text { text, save_path } => {
+                let tts = tts.unwrap();
                 let s = std::time::Instant::now();
                 tts.tts(TTSOpts {
                     txt: &text,
@@ -359,7 +371,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut tts_instances = Vec::new();
                 for i in 0..instances {
                     tracing::info!("Initializing TTS instance [{}] ({}/{})", format!("{:02x}", i), i + 1, instances);
-                    let instance = TTSKoko::new_with_instances(&model_path, &data_path, instances).await;
+                    let instance = TTSKoko::new(&model_path, &data_path, instances).await;
                     tts_instances.push(instance);
                 }
                 let app = kokoros_openai::create_server(tts_instances, speed).await;
@@ -371,6 +383,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             Mode::Stream => {
+                let tts = tts.unwrap();
                 let stdin = tokio::io::stdin();
                 let reader = BufReader::new(stdin);
                 let mut lines = reader.lines();

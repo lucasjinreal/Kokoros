@@ -70,11 +70,7 @@ impl Default for InitConfig {
 }
 
 impl TTSKoko {
-    pub async fn new(model_path: &str, voices_path: &str) -> Self {
-        Self::from_config(model_path, voices_path, InitConfig::default()).await
-    }
-
-    pub async fn new_with_instances(model_path: &str, voices_path: &str, total_instances: usize) -> Self {
+    pub async fn new(model_path: &str, voices_path: &str, total_instances: usize) -> Self {
         Self::from_config_with_instances(model_path, voices_path, InitConfig::default(), total_instances).await
     }
 
