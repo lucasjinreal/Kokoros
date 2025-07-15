@@ -6,3 +6,4 @@ vendor/
 venv/
 .vscode/
 .worktrees/
+logs/

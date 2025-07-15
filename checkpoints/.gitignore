@@ -1,2 +1,5 @@
 *.onnx
+*.pt
+*.ort
+*.config
 !download_models.sh

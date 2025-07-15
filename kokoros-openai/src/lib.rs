@@ -41,7 +41,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Break words used for chunk splitting
@@ -113,23 +113,25 @@ fn split_text_into_speech_chunks(text: &str, words_per_chunk: usize) -> Vec<Stri
     }
 
     // Final processing: Move break words from end of chunks to beginning of next chunk
-    for i in 0..final_chunks.len() - 1 {
-        let current_chunk = &final_chunks[i];
-        let words: Vec<&str> = current_chunk.trim().split_whitespace().collect();
+    if final_chunks.len() > 1 {
+        for i in 0..final_chunks.len() - 1 {
+            let current_chunk = &final_chunks[i];
+            let words: Vec<&str> = current_chunk.trim().split_whitespace().collect();
 
-        if let Some(last_word) = words.last() {
-            // Check if last word is a break word (case insensitive)
-            if BREAK_WORDS.contains(&last_word.to_lowercase().as_str()) && words.len() > 1 {
-                // Only move if it won't create an empty chunk (need more than 1 word)
-                let new_current = words[..words.len() - 1].join(" ");
+            if let Some(last_word) = words.last() {
+                // Check if last word is a break word (case insensitive)
+                if BREAK_WORDS.contains(&last_word.to_lowercase().as_str()) && words.len() > 1 {
+                    // Only move if it won't create an empty chunk (need more than 1 word)
+                    let new_current = words[..words.len() - 1].join(" ");
 
-                // Add break word to beginning of next chunk
-                let next_chunk = &final_chunks[i + 1];
-                let new_next = format!("{} {}", last_word, next_chunk);
+                    // Add break word to beginning of next chunk
+                    let next_chunk = &final_chunks[i + 1];
+                    let new_next = format!("{} {}", last_word, next_chunk);
 
-                // Update the chunks
-                final_chunks[i] = new_current;
-                final_chunks[i + 1] = new_next;
+                    // Update the chunks
+                    final_chunks[i] = new_current;
+                    final_chunks[i + 1] = new_next;
+                }
             }
         }
     }
@@ -405,14 +407,28 @@ struct ModelsResponse {
     data: Vec<ModelObject>,
 }
 
-pub async fn create_server(tts_instances: Vec<TTSKoko>) -> Router {
+#[derive(Clone)]
+struct AppState {
+    tts_instances: Arc<Vec<TTSKoko>>,
+    tts_single: TTSKoko,
+    default_speed: f32,
+}
+
+pub async fn create_server(tts_instances: Vec<TTSKoko>, default_speed: f32) -> Router {
     info!("Starting TTS server with {} instances", tts_instances.len());
+    info!("Global default speed: {}", default_speed);
 
     // Use first instance for compatibility with non-streaming endpoints
     let tts_single = tts_instances
         .first()
         .cloned()
         .expect("At least one TTS instance required");
+
+    let app_state = AppState {
+        tts_instances: Arc::new(tts_instances),
+        tts_single: tts_single.clone(),
+        default_speed,
+    };
 
     Router::new()
         .route("/", get(handle_home))
@@ -422,7 +438,7 @@ pub async fn create_server(tts_instances: Vec<TTSKoko>) -> Router {
         .route("/v1/models/{model}", get(handle_model))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(CorsLayer::permissive())
-        .with_state((tts_single, tts_instances))
+        .with_state(app_state)
 }
 
 pub use axum::serve;
@@ -469,7 +485,7 @@ async fn handle_home() -> &'static str {
 }
 
 async fn handle_tts(
-    State((tts_single, tts_instances)): State<(TTSKoko, Vec<TTSKoko>)>,
+    State(app_state): State<AppState>,
     request: axum::extract::Request,
 ) -> Result<Response, SpeechError> {
     let (request_id, request_start) = request
@@ -485,12 +501,14 @@ async fn handle_tts(
     let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
         .await
         .map_err(|e| {
-            error!("Error reading request body: {:?}", e);
+            let colored_request_id = get_colored_request_id_with_relative(&request_id, request_start);
+            error!("{} Error reading request body: {:?}", colored_request_id, e);
             SpeechError::Mp3Conversion(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
         })?;
 
     let speech_request: SpeechRequest = serde_json::from_slice(&bytes).map_err(|e| {
-        error!("JSON parsing error: {:?}", e);
+        let colored_request_id = get_colored_request_id_with_relative(&request_id, request_start);
+        error!("{} JSON parsing error: {:?}", colored_request_id, e);
         SpeechError::Mp3Conversion(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
     })?;
 
@@ -498,11 +516,21 @@ async fn handle_tts(
         input,
         voice: Voice(voice),
         response_format,
-        speed: Speed(speed),
+        speed: Speed(mut speed),
         initial_silence,
         stream,
         ..
     } = speech_request;
+
+    // Use default speed if speed was not provided in request
+    if speed == 1.0 {  // Default serde value
+        speed = app_state.default_speed;
+        debug!("{} Using global default speed: {} (request had no speed parameter)", 
+               get_colored_request_id_with_relative(&request_id, request_start), speed);
+    } else {
+        debug!("{} Using request speed: {} (overriding global default: {})", 
+               get_colored_request_id_with_relative(&request_id, request_start), speed, app_state.default_speed);
+    }
 
     // OpenAI-compliant behavior: Stream by default, only send complete file if stream: false
     let should_stream = stream.unwrap_or(true); // Default to streaming like OpenAI
@@ -515,7 +543,7 @@ async fn handle_tts(
 
     if should_stream {
         return handle_tts_streaming(
-            tts_instances,
+            (*app_state.tts_instances).clone(),
             input,
             voice,
             response_format,
@@ -528,7 +556,7 @@ async fn handle_tts(
     }
 
     // Non-streaming mode (existing implementation)
-    let raw_audio = tts_single
+    let raw_audio = app_state.tts_single
         .tts_raw_audio(
             &input,
             "en-us",
@@ -912,9 +940,9 @@ async fn handle_tts_streaming(
 }
 
 async fn handle_voices(
-    State((tts_single, _tts_instances)): State<(TTSKoko, Vec<TTSKoko>)>,
+    State(app_state): State<AppState>,
 ) -> Json<VoicesResponse> {
-    let voices = tts_single.get_available_voices();
+    let voices = app_state.tts_single.get_available_voices();
     Json(VoicesResponse { voices })
 }
 
@@ -986,11 +1014,36 @@ async fn request_id_middleware(
 ) -> axum::response::Response {
     let method = request.method().clone();
     let uri = request.uri().path().to_string();
+    let query = request.uri().query().unwrap_or("").to_string();
     let user_agent = request
         .headers()
         .get("user-agent")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("-")
+        .to_string();
+    let content_type = request
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let content_length = request
+        .headers()
+        .get("content-length")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let accept = request
+        .headers()
+        .get("accept")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let remote_addr = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("127.0.0.1")
         .to_string();
 
     let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
@@ -998,16 +1051,73 @@ async fn request_id_middleware(
     let colored_request_id = get_colored_request_id_with_relative(&request_id, start);
     request.extensions_mut().insert((request_id.clone(), start));
 
+    // Enhanced request logging with detailed headers and timing
     info!(
-        "{} {} {} \"{}\"",
-        colored_request_id, method, uri, user_agent
+        "{} REQUEST {} {} {} | UA: \"{}\" | CT: {} | CL: {} | Accept: {} | From: {}",
+        colored_request_id, method, uri, 
+        if query.is_empty() { "".to_string() } else { format!("?{}", query) },
+        user_agent, content_type, content_length, accept, remote_addr
     );
 
+    // Log request body for TTS endpoints (truncated for privacy)
+    if uri.contains("/audio/speech") && content_length > 0 && content_length < 10000 {
+        debug!(
+            "{} REQUEST_BODY size={} bytes, content_type={}",
+            colored_request_id, content_length, content_type
+        );
+    }
+
     let response = next.run(request).await;
-    let _latency = start.elapsed();
+    let latency = start.elapsed();
+    let status = response.status();
+    
+    // Extract response content length if available
+    let response_size = response
+        .headers()
+        .get("content-length")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    
+    let response_content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
 
     let colored_request_id_response = get_colored_request_id_with_relative(&request_id, start);
-    info!("{} {}", colored_request_id_response, response.status());
+    
+    // Enhanced response logging with timing and size metrics
+    if status.is_success() {
+        info!(
+            "{} RESPONSE {} | {:.3}ms | {} bytes | CT: {}",
+            colored_request_id_response, status, latency.as_millis(), response_size, response_content_type
+        );
+    } else if status.is_client_error() {
+        error!(
+            "{} CLIENT_ERROR {} | {:.3}ms | UA: \"{}\" | From: {}",
+            colored_request_id_response, status, latency.as_millis(), user_agent, remote_addr
+        );
+    } else if status.is_server_error() {
+        error!(
+            "{} SERVER_ERROR {} | {:.3}ms | Method: {} {} | UA: \"{}\"",
+            colored_request_id_response, status, latency.as_millis(), method, uri, user_agent
+        );
+    } else {
+        info!(
+            "{} RESPONSE {} | {:.3}ms",
+            colored_request_id_response, status, latency.as_millis()
+        );
+    }
+
+    // Log slow requests (>5 seconds) as warnings
+    if latency.as_secs() >= 5 {
+        warn!(
+            "{} SLOW_REQUEST {:.3}s | {} {} | UA: \"{}\"",
+            colored_request_id_response, latency.as_secs_f64(), method, uri, user_agent
+        );
+    }
 
     response
 }
