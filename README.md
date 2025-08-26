@@ -44,6 +44,7 @@ New Discord community: https://discord.gg/E566zfDWqD, Please join us if you inte
 
 ## Updates
 
+- **_`2025.07.15`_**: 🔥🔥🔥 **CLI performance optimization and enhanced logging.** CLI now automatically uses optimal single-instance performance with intelligent CPU threading, comprehensive logging configuration options (`--log cli/file/all/none`), and simplified API with unified constructor patterns for better developer experience;
 - **_`2025.07.12`_**: 🔥🔥🔥 **HTTP API streaming and parallel processing infrastructure.** OpenAI-compatible server supports streaming audio generation with `"stream": true` achieving 1-2s time-to-first-audio, work-in-progress parallel TTS processing with `--instances` flag support, improved logging system with Unix timestamps, and natural-sounding voice generation through advanced chunking;
 - **_`2025.01.22`_**: 🔥🔥🔥 **CLI streaming mode supported.** You can now using `--stream` to have fun with stream mode, kudos to [mroigo](https://github.com/mrorigo);
 - **_`2025.01.17`_**: 🔥🔥🔥 Style mixing supported! Now, listen the output AMSR effect by simply specific style: `af_sky.4+af_nicole.5`;
@@ -98,6 +99,27 @@ This will copy the `koko` binary to `/usr/local/bin` (making it available system
 ./target/release/koko -h
 ```
 
+### Logging Configuration
+
+Configure logging output destination and custom file paths:
+
+```bash
+# Console logging only (default)
+./target/release/koko --log cli text "Hello world"
+
+# File logging only
+./target/release/koko --log file text "Hello world"
+
+# Both console and file logging
+./target/release/koko --log all text "Hello world"
+
+# Custom log file path
+./target/release/koko --log file --log-file custom/path/kokoros.log text "Hello world"
+
+# Disable logging
+./target/release/koko --log none text "Hello world"
+```
+
 ### Generate speech for some text
 
 ```
@@ -133,7 +155,7 @@ Configure parallel TTS instances for the OpenAI-compatible server based on your 
 # Balanced performance (default, 2 instances, usually best throughput for CPU processing)
 ./target/release/koko openai
 
-# Best total processing time (Diminishing returns on CPU processing observed on Mac M2)
+# Best total processing time (optimal at 4 instances on Mac M2)
 ./target/release/koko openai --instances 4
 ```
 
@@ -144,17 +166,19 @@ Choose your configuration based on use case:
   - This was benchmarked on a Mac M2 with 8 cores and 24GB RAM.
   - Tested with the message:
     > Welcome to our comprehensive technology demonstration session. Today we will explore advanced parallel processing systems thoroughly. These systems utilize multiple computational instances simultaneously for efficiency. Each instance processes different segments concurrently without interference. The coordination between instances ensures seamless output delivery consistently. Modern algorithms optimize resource utilization effectively across all components. Performance improvements are measurable and significant in real scenarios. Quality assurance validates each processing stage thoroughly before deployment. Integration testing confirms system reliability consistently under various conditions. User experience remains smooth throughout operation regardless of complexity. Advanced monitoring tracks system performance metrics continuously during execution.
-  - Benchmark results (avg of 5)
+  - Benchmark results (avg of 3)
     | No. of instances | TTFA | Total time |
     |------------------|------|------------|
-    | 1                | 1.44s | 19.0s     |
-    | 2                | 2.44s | 16.1s     |
-    | 4                | 4.98s | 16.6s     |
+    | 1                | 1.87s | 25.1s     |
+    | 2                | 2.15s | 16.0s     |
+    | 4                | 3.56s | 13.7s     |
+    | 8                | 7.73s | 14.7s     |
   - If you have a CPU, memory bandwidth will be the usual bottleneck. You will have to experiment to find a sweet spot of number of instances giving you optimal throughput on your system configuration.
   - If you have a NVIDIA GPU, you can try increasing the number of instances. You are expected to further improve throughput.
-  - Attempts to [make this work on CoreML](https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html), would likely start with converting the ONNX model to CoreML or ORT.
+  - Note: 8 instances shows diminishing returns due to minimum intra-op threading of 2 threads per instance. Performance may differ if minimum threading is adjusted.
+  - Attempts to [make this work on CoreML](https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html) face compatibility issues with the Kokoro ONNX model structure, causing fallback to CPU execution. The Kokoro model throws errors about limitations on available nodes, forcing most operations to fall back to CPU processing. This model complexity limitation makes CPU-specific optimization critical for Apple Silicon performance.
 
-*Note: The `--instances` flag is currently supported in API server mode. CLI text commands will support parallel processing in future releases.*
+*Note: The `--instances` flag is supported in API server mode for parallel processing. CLI commands are integrated with the threading system and use single instance by default for optimal performance (CLI parallel processing support planned for future releases).*
 
 ### OpenAI-Compatible Server
 
