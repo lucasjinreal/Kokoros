@@ -35,6 +35,7 @@ use futures::stream::StreamExt;
 use kokoros::{
     tts::koko::{InitConfig as TTSKokoInitConfig, TTSKoko},
     utils::mp3::pcm_to_mp3,
+    utils::opus::pcm_to_opus_ogg,
     utils::wav::{WavHeader, write_audio_chunk},
 };
 use regex::Regex;
@@ -442,6 +443,9 @@ enum SpeechError {
 
     #[allow(dead_code)]
     Mp3Conversion(std::io::Error),
+
+    #[allow(dead_code)]
+    OpusConversion(std::io::Error),
 }
 
 impl std::fmt::Display for SpeechError {
@@ -451,6 +455,7 @@ impl std::fmt::Display for SpeechError {
             SpeechError::Header(e) => write!(f, "Header error: {}", e),
             SpeechError::Chunk(e) => write!(f, "Chunk error: {}", e),
             SpeechError::Mp3Conversion(e) => write!(f, "MP3 conversion error: {}", e),
+            SpeechError::OpusConversion(e) => write!(f, "Opus conversion error: {}", e),
         }
     }
 }
@@ -553,6 +558,12 @@ async fn handle_tts(
             write_audio_chunk(&mut wav_data, &raw_audio).map_err(SpeechError::Chunk)?;
 
             ("audio/wav", wav_data, "WAV")
+        }
+        AudioFormat::Opus => {
+            let opus_data =
+                pcm_to_opus_ogg(&raw_audio, sample_rate).map_err(|e| SpeechError::OpusConversion(e))?;
+
+            ("audio/opus", opus_data, "OPUS")
         }
         AudioFormat::Mp3 => {
             let mp3_data =
