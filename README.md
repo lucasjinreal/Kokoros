@@ -101,6 +101,7 @@ This will copy the `koko` binary to `/usr/local/bin` (making it available system
 ### Generate speech for some text
 
 ```
+mkdir -p tmp
 ./target/release/koko text "Hello, this is a TTS test"
 ```
 
