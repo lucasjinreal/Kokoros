@@ -6,3 +6,5 @@ vendor/
 venv/
 .vscode/
 .worktrees/
+.idea/
+tmp/

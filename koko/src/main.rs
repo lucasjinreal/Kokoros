@@ -7,6 +7,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::{
     fs::{self},
     io::Write,
+    path::Path,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::fmt::time::FormatTime;
@@ -143,12 +144,93 @@ struct Cli {
     #[arg(long = "initial-silence", value_name = "INITIAL_SILENCE")]
     initial_silence: Option<usize>,
 
+    /// Also output a sidecar TSV file with word-level timestamps
+    #[arg(long = "timestamps", default_value_t = false, global = true)]
+    timestamps: bool,
+
     /// Number of TTS instances for parallel processing
     #[arg(long = "instances", value_name = "INSTANCES", default_value_t = 2)]
     instances: usize,
 
     #[command(subcommand)]
     mode: Mode,
+}
+
+fn derive_tsv_path_from_wav(path: &str) -> String {
+    let p = Path::new(path);
+    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+        if let Some(parent) = p.parent() {
+            return parent.join(format!("{stem}.tsv")).to_string_lossy().to_string();
+        }
+        return format!("{stem}.tsv");
+    }
+    // Fallback: just append .tsv
+    format!("{path}.tsv")
+}
+
+fn write_wav_file(path: &str, samples: &[f32], sample_rate: u32, mono: bool) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::Write;
+
+    let channels: u16 = if mono { 1 } else { 2 };
+    let bits_per_sample: u16 = 32; // f32
+    let bytes_per_sample: u32 = (bits_per_sample as u32) / 8;
+    let block_align: u16 = channels * bits_per_sample / 8;
+    let byte_rate: u32 = sample_rate * (block_align as u32);
+
+    // Data size in bytes
+    let num_frames: usize = samples.len();
+    let total_samples_to_write: usize = if mono { num_frames } else { num_frames * 2 };
+    let data_size: u32 = (total_samples_to_write as u32) * bytes_per_sample;
+    let riff_chunk_size: u32 = 36 + data_size; // 4 + (8+16) + (8+data)
+
+    let mut f = File::create(path)?;
+
+    // RIFF header
+    f.write_all(b"RIFF")?;
+    f.write_all(&riff_chunk_size.to_le_bytes())?;
+    f.write_all(b"WAVE")?;
+
+    // fmt chunk
+    f.write_all(b"fmt ")?;
+    f.write_all(&(16u32).to_le_bytes())?; // PCM fmt chunk size
+    f.write_all(&(3u16).to_le_bytes())?; // IEEE float = 3
+    f.write_all(&channels.to_le_bytes())?;
+    f.write_all(&sample_rate.to_le_bytes())?;
+    f.write_all(&byte_rate.to_le_bytes())?;
+    f.write_all(&block_align.to_le_bytes())?;
+    f.write_all(&bits_per_sample.to_le_bytes())?;
+
+    // data chunk
+    f.write_all(b"data")?;
+    f.write_all(&data_size.to_le_bytes())?;
+
+    // write samples
+    if mono {
+        for &s in samples {
+            f.write_all(&s.to_le_bytes())?;
+        }
+    } else {
+        for &s in samples {
+            f.write_all(&s.to_le_bytes())?; // left
+            f.write_all(&s.to_le_bytes())?; // right (duplicate for simple stereo)
+        }
+    }
+
+    Ok(())
+}
+
+fn write_tsv(path: &str, alignments: &[(String, f32, f32)]) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::Write;
+    let mut f = File::create(path)?;
+    f.write_all(b"word\tstart_sec\tend_sec\n")?;
+    for (w, s, e) in alignments {
+        // Use 3 decimal places by default
+        let line = format!("{}\t{:.3}\t{:.3}\n", w, s, e);
+        f.write_all(line.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -171,6 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             speed,
             initial_silence,
             mono,
+            timestamps,
             instances,
             mode,
         } = Cli::parse();
@@ -190,8 +273,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     let save_path = save_path_format.replace("{line}", &i.to_string());
+                    if timestamps {
+                        match tts.tts_timestamped_raw_audio(
+                            stripped_line,
+                            &lan,
+                            &style,
+                            speed,
+                            initial_silence,
+                            None,
+                            None,
+                            None,
+                        ) {
+                            Ok(Some((audio, words))) => {
+                                // Write WAV
+                                // Note: current engine uses 24kHz
+                                write_wav_file(&save_path, &audio, 24_000, mono)?;
+
+                                // Write TSV sidecar
+                                let tsv_path = derive_tsv_path_from_wav(&save_path);
+                                let rows: Vec<(String, f32, f32)> = words
+                                    .into_iter()
+                                    .map(|w| (w.word, w.start_sec, w.end_sec))
+                                    .collect();
+                                write_tsv(&tsv_path, &rows)?;
+                                eprintln!("Audio saved to {}", save_path);
+                                eprintln!("Timestamps saved to {}", tsv_path);
+                            }
+                            Ok(None) => {
+                                eprintln!("No audio produced for line {}", i + 1);
+                            }
+                            Err(e) => {
+                                eprintln!("Error processing line {}: {}", i + 1, e);
+                            }
+                        }
+                    } else {
+                        tts.tts(TTSOpts {
+                            txt: stripped_line,
+                            lan: &lan,
+                            style_name: &style,
+                            save_path: &save_path,
+                            mono,
+                            speed,
+                            initial_silence,
+                        })?;
+                    }
+                }
+            }
+
+            Mode::Text { text, save_path } => {
+                let s = std::time::Instant::now();
+                if timestamps {
+                    match tts.tts_timestamped_raw_audio(
+                        &text,
+                        &lan,
+                        &style,
+                        speed,
+                        initial_silence,
+                        None,
+                        None,
+                        None,
+                    ) {
+                        Ok(Some((audio, words))) => {
+                            write_wav_file(&save_path, &audio, 24_000, mono)?;
+                            let tsv_path = derive_tsv_path_from_wav(&save_path);
+                            let rows: Vec<(String, f32, f32)> = words
+                                .into_iter()
+                                .map(|w| (w.word, w.start_sec, w.end_sec))
+                                .collect();
+                            write_tsv(&tsv_path, &rows)?;
+                            eprintln!("Audio saved to {}", save_path);
+                            eprintln!("Timestamps saved to {}", tsv_path);
+                        }
+                        Ok(None) => {
+                            eprintln!("No audio produced for input text");
+                        }
+                        Err(e) => {
+                            eprintln!("Error processing input text: {}", e);
+                        }
+                    }
+                } else {
                     tts.tts(TTSOpts {
-                        txt: stripped_line,
+                        txt: &text,
                         lan: &lan,
                         style_name: &style,
                         save_path: &save_path,
@@ -200,19 +362,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         initial_silence,
                     })?;
                 }
-            }
-
-            Mode::Text { text, save_path } => {
-                let s = std::time::Instant::now();
-                tts.tts(TTSOpts {
-                    txt: &text,
-                    lan: &lan,
-                    style_name: &style,
-                    save_path: &save_path,
-                    mono,
-                    speed,
-                    initial_silence,
-                })?;
                 println!("Time taken: {:?}", s.elapsed());
                 let words_per_second =
                     text.split_whitespace().count() as f32 / s.elapsed().as_secs_f32();

@@ -1,4 +1,4 @@
-use crate::onn::ort_koko::{self};
+use crate::onn::ort_koko::{self, ModelStrategy};
 use crate::tts::tokenize::tokenize;
 use crate::utils;
 use crate::utils::debug::format_debug_prefix;
@@ -6,6 +6,7 @@ use lazy_static::lazy_static;
 use ndarray::Array3;
 use ndarray_npy::NpzReader;
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +22,37 @@ lazy_static! {
 
 // Flag to ensure voice styles are only logged once
 static VOICES_LOGGED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone)]
+pub struct WordAlignment {
+    pub word: String,
+    pub start_sec: f32,
+    pub end_sec: f32,
+}
+
+#[derive(Debug, Clone)]
+pub enum TtsOutput {
+    /// Standard audio, no timing data
+    Audio(Vec<f32>),
+    /// Audio with synchronized word timestamps
+    Aligned(Vec<f32>, Vec<WordAlignment>),
+}
+
+impl TtsOutput {
+    pub fn raw_output(self) -> (Vec<f32>, Option<Vec<WordAlignment>>) {
+        match self {
+            TtsOutput::Audio(a) => (a, None),
+            TtsOutput::Aligned(a, b) => (a, Some(b))
+        }
+    }
+}
+
+enum ExecutionMode<'a> {
+    /// Collects all data, adjusts timestamps to be global, returns it at the end.
+    Batch,
+    /// Yields chunks immediately with relative timestamps. Returns None at end.
+    Stream(&'a mut dyn FnMut(TtsOutput) -> Result<(), Box<dyn std::error::Error>>),
+}
 
 #[derive(Debug, Clone)]
 pub struct TTSOpts<'a> {
@@ -102,6 +134,296 @@ impl TTSKoko {
             styles,
             init_config: cfg,
         }
+    }
+
+    fn process_internal(
+        &self,
+        txt: &str,
+        lan: &str,
+        style_name: &str,
+        speed: f32,
+        initial_silence: Option<usize>,
+        request_id: Option<&str>,
+        instance_id: Option<&str>,
+        chunk_number_start: Option<usize>,
+        mut mode: ExecutionMode,
+    ) -> Result<Option<(Vec<f32>, Vec<WordAlignment>)>, Box<dyn std::error::Error>> {
+
+        let chunks = self.split_text_into_chunks(txt, 500);
+        let start_chunk_num = chunk_number_start.unwrap_or(0);
+
+        let debug_prefix = format_debug_prefix(request_id, instance_id);
+
+        let process_one_chunk = |chunk: &str, chunk_num: usize| -> Result<TtsOutput, Box<dyn std::error::Error>> {
+
+            let chunk_info = format!("Chunk: {}, ", chunk_num);
+            tracing::debug!("{} {}text: '{}'", debug_prefix, chunk_info, chunk);
+
+            // A. Tokenize
+            // Only build the expensive alignment map if the loaded model supports timestamps.
+            let use_alignment = {
+                let model = self.model.lock().unwrap();
+                matches!(model.strategy(), Some(ModelStrategy::Timestamped(_)))
+            };
+
+            let (mut tokens, word_map) = if use_alignment {
+                self.tokenize_with_alignment(chunk, lan)
+            } else {
+                // Fast path for audio-only models: single eSpeak pass, no per-item calls
+                self.tokenize_full_no_alignment(chunk, lan)
+            };
+
+            // Log token count (helpful for debugging context limits)
+            tracing::debug!("{} {}tokens generated: {}", debug_prefix, chunk_info, tokens.len());
+
+            // B. Silence
+            let silence_count = initial_silence.unwrap_or(0);
+            for _ in 0..silence_count {
+                tokens.insert(0, 30);
+            }
+
+            // C. Style
+            let styles = self.mix_styles(style_name, tokens.len())?;
+
+            // D. Padding
+            let mut padded_tokens = vec![0];
+            padded_tokens.extend(tokens);
+            padded_tokens.push(0);
+
+            let index_offset = 1 + silence_count;
+            let tokens_batch = vec![padded_tokens];
+
+            // E. Infer
+            let (chunk_audio_array, chunk_durations_opt) = self.model.lock().unwrap().infer(
+                tokens_batch,
+                styles,
+                speed,
+                request_id,
+                instance_id,
+                Some(chunk_num),
+            )?;
+
+            let chunk_audio: Vec<f32> = chunk_audio_array.iter().cloned().collect();
+
+            // F. Calculate Alignments
+            if let Some(durations) = chunk_durations_opt {
+                let mut alignments = Vec::new();
+                let frames_per_sec = 80.0;
+                let mut chunk_time_cursor = 0.0;
+
+                for (word, start, end) in word_map {
+                    let adj_start = start + index_offset;
+                    let adj_end = end + index_offset;
+
+                    if adj_end <= durations.len() {
+                        let word_frames: f32 = durations[adj_start..adj_end].iter().sum();
+
+                        alignments.push(WordAlignment {
+                            word,
+                            start_sec: chunk_time_cursor / frames_per_sec,
+                            end_sec: (chunk_time_cursor + word_frames) / frames_per_sec,
+                        });
+                        chunk_time_cursor += word_frames;
+                    }
+                }
+                Ok(TtsOutput::Aligned(chunk_audio, alignments))
+            } else {
+                Ok(TtsOutput::Audio(chunk_audio))
+            }
+        };
+
+        match &mut mode {
+            ExecutionMode::Stream(callback) => {
+                for (i, chunk) in chunks.iter().enumerate() {
+                    let output = process_one_chunk(chunk, start_chunk_num + i)?;
+                    callback(output)?;
+                }
+                Ok(None)
+            }
+
+            ExecutionMode::Batch => {
+                let mut batch_audio = Vec::new();
+                let mut batch_alignments = Vec::new();
+                let mut global_time_offset = 0.0;
+                let sample_rate = 24000.0;
+
+                for (i, chunk) in chunks.iter().enumerate() {
+                    let output = process_one_chunk(chunk, start_chunk_num + i)?;
+
+                    match output {
+                        TtsOutput::Aligned(audio, alignments) => {
+                            let duration = audio.len() as f32 / sample_rate;
+                            batch_audio.extend_from_slice(&audio);
+
+                            for mut align in alignments {
+                                align.start_sec += global_time_offset;
+                                align.end_sec += global_time_offset;
+                                batch_alignments.push(align);
+                            }
+                            global_time_offset += duration;
+                        }
+                        TtsOutput::Audio(audio) => {
+                            let duration = audio.len() as f32 / sample_rate;
+                            batch_audio.extend_from_slice(&audio);
+                            global_time_offset += duration;
+                        }
+                    }
+                }
+                Ok(Some((batch_audio, batch_alignments)))
+            }
+        }
+    }
+
+    /// Prosody-Aware Tokenization ---
+    fn tokenize_with_alignment(&self, text: &str, lan: &str) -> (Vec<i64>, Vec<(String, usize, usize)>) {
+        // We will produce tokens from the full, context-aware phonemes (best prosody)
+        // and build an alignment map by estimating per-word token spans using
+        // per-word phoneme tokenization. This keeps audio natural while providing
+        // robust timestamps even when eSpeak merges words (e.g., "the model").
+
+        // 1) Full-phrase phonemes and tokens (prosody source)
+        let full_phonemes = {
+            let _guard = ESPEAK_MUTEX.lock().unwrap();
+            text_to_phonemes(text, lan, None, true, false)
+                .unwrap_or_default()
+                .join("")
+        };
+        let all_tokens = tokenize(&full_phonemes);
+
+        // 2) Build a tokenization plan per original "word or punctuation" unit.
+        //    We want punctuation timestamps too, so we split words and punctuation as separate items.
+        //    Simple heuristic: split on whitespace, then further split trailing/leading punctuation
+        //    for .,!?;: characters.
+        fn split_words_and_punct(s: &str) -> Vec<String> {
+            let mut out = Vec::new();
+            for raw in s.split_whitespace() {
+                let mut start = 0usize;
+                let mut end = raw.len();
+                let chars: Vec<char> = raw.chars().collect();
+
+                // Leading punctuation
+                while start < end {
+                    let c = chars[start];
+                    if ".,!?:;".contains(c) {
+                        out.push(c.to_string());
+                        start += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // Trailing punctuation
+                while end > start {
+                    let c = chars[end - 1];
+                    if ".,!?:;".contains(c) {
+                        end -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                if start < end {
+                    out.push(chars[start..end].iter().collect());
+                }
+                // Push trailing punctuation in original order
+                for i in end..chars.len() {
+                    out.push(chars[i].to_string());
+                }
+            }
+            out
+        }
+
+        let items = split_words_and_punct(text);
+
+        // 3) For each item, get its standalone phonemes and token count.
+        //    Punctuation-only items get zero tokens but we still record them for timestamps.
+        let mut per_item_token_counts: Vec<usize> = Vec::with_capacity(items.len());
+        let mut per_item_is_punct: Vec<bool> = Vec::with_capacity(items.len());
+        for it in &items {
+            if it.len() == 1 && ".,!?:;".contains(it.chars().next().unwrap()) {
+                per_item_token_counts.push(0);
+                per_item_is_punct.push(true);
+            } else {
+                let ph = {
+                    let _guard = ESPEAK_MUTEX.lock().unwrap();
+                    text_to_phonemes(it, lan, None, true, false)
+                        .unwrap_or_default()
+                        .join("")
+                };
+                let cnt = tokenize(&ph).len();
+                per_item_token_counts.push(cnt);
+                per_item_is_punct.push(false);
+            }
+        }
+
+        // 4) Map per-item token counts onto the full token sequence length.
+        //    If sums differ (likely due to coarticulation/context differences),
+        //    rescale the counts to match the full length, keeping the distribution similar.
+        let target_len = all_tokens.len();
+        let mut sum_counts: usize = per_item_token_counts.iter().sum();
+
+        let mut adjusted_counts: Vec<usize> = per_item_token_counts.clone();
+        if sum_counts != target_len && sum_counts > 0 {
+            let scale = (target_len as f64) / (sum_counts as f64);
+            let mut fractional: Vec<(usize, f64)> = Vec::with_capacity(adjusted_counts.len());
+            let mut new_sum = 0usize;
+            for (i, &c) in per_item_token_counts.iter().enumerate() {
+                let scaled = (c as f64) * scale;
+                let floored = scaled.floor() as usize;
+                adjusted_counts[i] = floored;
+                new_sum += floored;
+                fractional.push((i, scaled - floored as f64));
+            }
+            // Distribute the remaining tokens to the largest fractional parts
+            let mut remaining = target_len.saturating_sub(new_sum);
+            fractional.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            for (i, _) in fractional {
+                if remaining == 0 { break; }
+                adjusted_counts[i] += 1;
+                remaining -= 1;
+            }
+            tracing::debug!("Alignment: rescaled per-item token counts from {} to {} to match durations length {}.", sum_counts, adjusted_counts.iter().sum::<usize>(), target_len);
+            sum_counts = adjusted_counts.iter().sum();
+        }
+
+        // 5) Build the word_map by assigning contiguous spans across the token stream.
+        //    Punctuation items receive zero-length spans by design (timestamp markers).
+        let mut word_map: Vec<(String, usize, usize)> = Vec::with_capacity(items.len());
+        let mut cursor = 0usize;
+        for (idx, item) in items.iter().enumerate() {
+            let cnt = adjusted_counts.get(idx).copied().unwrap_or(0);
+            if per_item_is_punct[idx] {
+                // Zero-length marker at current cursor
+                word_map.push((item.clone(), cursor, cursor));
+            } else {
+                let start_idx = cursor;
+                let end_idx = cursor.saturating_add(cnt);
+                word_map.push((item.clone(), start_idx, end_idx));
+                cursor = end_idx;
+            }
+        }
+
+        // If our mapping under-ran due to rounding issues, extend the last non-punct item to cover all tokens
+        if cursor < target_len {
+            if let Some(last_non_punct_pos) = (0..word_map.len()).rev().find(|&i| !(per_item_is_punct[i])) {
+                let (w, s, _e) = &word_map[last_non_punct_pos];
+                word_map[last_non_punct_pos] = (w.clone(), *s, target_len);
+            }
+        }
+
+        // If there are absolutely no tokens (empty text), return empty mapping
+        (all_tokens, word_map)
+    }
+
+    /// Fast tokenization path for audio-only models (no timestamps)
+    /// Performs a single eSpeak phonemization for the full text and returns tokens with an empty word map.
+    fn tokenize_full_no_alignment(&self, text: &str, lan: &str) -> (Vec<i64>, Vec<(String, usize, usize)>) {
+        let full_phonemes = {
+            let _guard = ESPEAK_MUTEX.lock().unwrap();
+            text_to_phonemes(text, lan, None, true, false)
+                .unwrap_or_default()
+                .join("")
+        };
+        let all_tokens = tokenize(&full_phonemes);
+        (all_tokens, Vec::new())
     }
 
     fn split_text_into_chunks(&self, text: &str, max_tokens: usize) -> Vec<String> {
@@ -306,6 +628,30 @@ impl TTSKoko {
         chunks
     }
 
+    pub fn tts_timestamped_raw_audio(
+        &self,
+        txt: &str,
+        lan: &str,
+        style_name: &str,
+        speed: f32,
+        initial_silence: Option<usize>,
+        request_id: Option<&str>,
+        instance_id: Option<&str>,
+        chunk_number: Option<usize>,
+    ) -> Result<Option<(Vec<f32>, Vec<WordAlignment>)>, Box<dyn Error>> {
+        self.process_internal(
+            txt,
+            lan,
+            style_name,
+            speed,
+            initial_silence,
+            request_id,
+            instance_id,
+            chunk_number,
+            ExecutionMode::Batch
+        )
+    }
+
     pub fn tts_raw_audio(
         &self,
         txt: &str,
@@ -317,71 +663,19 @@ impl TTSKoko {
         instance_id: Option<&str>,
         chunk_number: Option<usize>,
     ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        // Split text into appropriate chunks
-        let chunks = self.split_text_into_chunks(txt, 500); // Using 500 to leave 12 tokens of margin
-        let mut final_audio = Vec::new();
+        let audio = self.process_internal(
+            txt,
+            lan,
+            style_name,
+            speed,
+            initial_silence,
+            request_id,
+            instance_id,
+            chunk_number,
+            ExecutionMode::Batch,
+        )?;
 
-        for chunk in chunks {
-            // Convert chunk to phonemes
-            let phonemes = {
-                let _guard = ESPEAK_MUTEX.lock().unwrap();
-                text_to_phonemes(&chunk, lan, None, true, false)
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
-                    .join("")
-            };
-            let debug_prefix = format_debug_prefix(request_id, instance_id);
-            let chunk_info = chunk_number
-                .map(|n| format!("Chunk: {}, ", n))
-                .unwrap_or_default();
-            tracing::debug!(
-                "{} {}text: '{}' -> phonemes: '{}'",
-                debug_prefix,
-                chunk_info,
-                chunk,
-                phonemes
-            );
-            let mut tokens = tokenize(&phonemes);
-
-            for _ in 0..initial_silence.unwrap_or(0) {
-                tokens.insert(0, 30);
-            }
-
-            // Get style vectors once
-            let styles = self.mix_styles(style_name, tokens.len())?;
-
-            // pad a 0 to start and end of tokens
-            let mut padded_tokens = vec![0];
-            for &token in &tokens {
-                padded_tokens.push(token);
-            }
-            padded_tokens.push(0);
-
-            let tokens = vec![padded_tokens];
-
-            match self.model.lock().unwrap().infer(
-                tokens,
-                styles.clone(),
-                speed,
-                request_id,
-                instance_id,
-                chunk_number,
-            ) {
-                Ok(chunk_audio) => {
-                    let chunk_audio: Vec<f32> = chunk_audio.iter().cloned().collect();
-                    final_audio.extend_from_slice(&chunk_audio);
-                }
-                Err(e) => {
-                    eprintln!("Error processing chunk: {:?}", e);
-                    eprintln!("Chunk text was: {:?}", chunk);
-                    return Err(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Chunk processing failed: {:?}", e),
-                    )));
-                }
-            }
-        }
-
-        Ok(final_audio)
+        Ok(audio.unwrap().0)
     }
 
     /// Streaming version that yields audio chunks as they're generated
@@ -400,69 +694,60 @@ impl TTSKoko {
     where
         F: FnMut(Vec<f32>) -> Result<(), Box<dyn std::error::Error>>,
     {
-        // Split text into appropriate chunks
-        let chunks = self.split_text_into_chunks(txt, 500); // Using 500 to leave 12 tokens of margin
+        let mut adapter = |output: TtsOutput| -> Result<(), Box<dyn std::error::Error>> {
+            chunk_callback(output.raw_output().0)
+        };
 
-        for chunk in chunks {
-            // Convert chunk to phonemes
-            let phonemes = {
-                let _guard = ESPEAK_MUTEX.lock().unwrap();
-                text_to_phonemes(&chunk, lan, None, true, false)
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
-                    .join("")
-            };
-            let debug_prefix = format_debug_prefix(request_id, instance_id);
-            let chunk_info = chunk_number
-                .map(|n| format!("Chunk: {}, ", n))
-                .unwrap_or_default();
-            tracing::debug!(
-                "{} {}text: '{}' -> phonemes: '{}'",
-                debug_prefix,
-                chunk_info,
-                chunk,
-                phonemes
-            );
-            let mut tokens = tokenize(&phonemes);
+        self.process_internal(
+            txt,
+            lan,
+            style_name,
+            speed,
+            initial_silence,
+            request_id,
+            instance_id,
+            chunk_number,
+            // Pass the ADAPTER, not the original callback
+            ExecutionMode::Stream(&mut adapter),
+        )?;
 
-            for _ in 0..initial_silence.unwrap_or(0) {
-                tokens.insert(0, 30);
-            }
+        Ok(())
+    }
 
-            // Get style vectors once
-            let styles = self.mix_styles(style_name, tokens.len())?;
+    /// Streaming version that strictly requires a timestamped model.
+    /// Yields audio chunks + alignment data via the callback as they are generated.
+    pub fn tts_timestamped_raw_audio_streaming<F>(
+        &self,
+        txt: &str,
+        lan: &str,
+        style_name: &str,
+        speed: f32,
+        initial_silence: Option<usize>,
+        request_id: Option<&str>,
+        instance_id: Option<&str>,
+        chunk_number: Option<usize>,
+        mut chunk_callback: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+    // CHANGE: Callback accepts TtsOutput instead of just Vec<f32>
+        F: FnMut((Vec<f32>, Vec<WordAlignment>)) -> Result<(), Box<dyn std::error::Error>>,
+    {
+        let mut adapter = |output: TtsOutput| -> Result<(), Box<dyn std::error::Error>> {
+            let audio = output.raw_output();
+            chunk_callback((audio.0, audio.1.unwrap()))
+        };
 
-            // pad a 0 to start and end of tokens
-            let mut padded_tokens = vec![0];
-            for &token in &tokens {
-                padded_tokens.push(token);
-            }
-            padded_tokens.push(0);
-
-            let tokens = vec![padded_tokens];
-
-            match self.model.lock().unwrap().infer(
-                tokens,
-                styles.clone(),
-                speed,
-                request_id,
-                instance_id,
-                chunk_number,
-            ) {
-                Ok(chunk_audio) => {
-                    let chunk_audio: Vec<f32> = chunk_audio.iter().cloned().collect();
-                    // Yield this chunk via callback
-                    chunk_callback(chunk_audio)?;
-                }
-                Err(e) => {
-                    eprintln!("Error processing chunk: {:?}", e);
-                    eprintln!("Chunk text was: {:?}", chunk);
-                    return Err(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Chunk processing failed: {:?}", e),
-                    )));
-                }
-            }
-        }
+        self.process_internal(
+            txt,
+            lan,
+            style_name,
+            speed,
+            initial_silence,
+            request_id,
+            instance_id,
+            chunk_number,
+            ExecutionMode::Stream(&mut adapter),
+        )?;
 
         Ok(())
     }
@@ -563,6 +848,7 @@ impl TTSKoko {
                     }
                 }
             }
+            eprintln!("blended_style: {:?}", blended_style);
             Ok(blended_style)
         }
     }
@@ -716,6 +1002,36 @@ impl TTSKokoParallel {
         Arc::clone(&self.models[index])
     }
 
+    /// HELPER: Create a lightweight wrapper for a specific model ---
+    fn get_tts_wrapper(&self, model_instance: Arc<Mutex<ort_koko::OrtKoko>>) -> TTSKoko {
+        TTSKoko {
+            model_path: self.model_path.clone(),
+            model: model_instance,
+            // TODO: This clones the HashMap. In a future PR, wrap styles in Arc<>!
+            styles: self.styles.clone(),
+            init_config: self.init_config.clone(),
+        }
+    }
+
+    /// TTS with timestamps for model instance
+    pub fn tts_timestamped_raw_audio_with_instance(
+        &self,
+        text: &str,
+        language: &str,
+        style_name: &str,
+        speed: f32,
+        initial_silence: Option<usize>,
+        request_id: Option<&str>,
+        instance_id: Option<&str>,
+        chunk_number: Option<usize>,
+        model_instance: Arc<Mutex<ort_koko::OrtKoko>>,
+    ) -> Result<Option<(Vec<f32>, Vec<WordAlignment>)>, Box<dyn Error>> {
+        let wrapper = self.get_tts_wrapper(model_instance);
+        wrapper.tts_timestamped_raw_audio(
+            text, language, style_name, speed, initial_silence, request_id, instance_id, chunk_number
+        )
+    }
+
     /// TTS processing with specific model instance (no global lock)
     pub fn tts_raw_audio_with_instance(
         &self,
@@ -729,62 +1045,12 @@ impl TTSKokoParallel {
         chunk_number: Option<usize>,
         model_instance: Arc<Mutex<ort_koko::OrtKoko>>,
     ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        // Convert text to phonemes
-        let phonemes = {
-            let _guard = ESPEAK_MUTEX.lock().unwrap();
-            text_to_phonemes(text, language, None, true, false)?
-        };
-        let phonemes = phonemes.join("");
-        let debug_prefix = format_debug_prefix(request_id, instance_id);
-        tracing::debug!(
-            "{} text: '{}' -> phonemes: '{}'",
-            debug_prefix,
-            text,
-            phonemes
-        );
+        let wrapper = self.get_tts_wrapper(model_instance);
 
-        // Tokenize phonemes
-        let mut tokens = tokenize(&phonemes);
-
-        // Add initial silence if specified
-        for _ in 0..initial_silence.unwrap_or(0) {
-            tokens.insert(0, 30);
-        }
-
-        // Get style vectors - create temporary TTSKoko instance to use mix_styles
-        let temp_tts = TTSKoko {
-            model_path: self.model_path.clone(),
-            model: Arc::clone(&self.models[0]), // Just for interface compatibility
-            styles: self.styles.clone(),
-            init_config: self.init_config.clone(),
-        };
-        let styles = temp_tts.mix_styles(style_name, tokens.len())?;
-
-        // pad a 0 to start and end of tokens
-        let mut padded_tokens = vec![0];
-        for &token in &tokens {
-            padded_tokens.push(token);
-        }
-        padded_tokens.push(0);
-
-        let tokens_vec = vec![padded_tokens];
-
-        tracing::debug!("shape_style: {:?}", styles.len());
-
-        // Run TTS inference with provided model instance
-        let mut model = model_instance.lock().unwrap();
-        let audio = model.infer(
-            tokens_vec,
-            styles.clone(),
-            speed,
-            request_id,
-            instance_id,
-            chunk_number,
-        )?;
-
-        // Convert ndarray to Vec<f32>
-        let audio_vec: Vec<f32> = audio.iter().cloned().collect();
-        Ok(audio_vec)
+        wrapper.tts_raw_audio(
+            text, language, style_name, speed,
+            initial_silence, request_id, instance_id, chunk_number
+        )
     }
 
     /// Forward compatibility - split text method
