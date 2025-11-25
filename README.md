@@ -232,10 +232,16 @@ echo "Suppose some other program was outputting lines of text" | ./target/releas
 
 ### With docker
 
-1. Build the image
+1. Build or Pull Docker Image
+
+You can either **build the Docker image locally** or **pull the pre-built image from GitHub Container Registry (GHCR)**.
 
 ```bash
+# Build locally
 docker build -t kokoros .
+
+# Or pull pre-built image from GHCR
+docker pull ghcr.io/lucasjinreal/kokoros:latest
 ```
 
 2. Run the image, passing options as described above
