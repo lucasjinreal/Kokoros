@@ -241,7 +241,7 @@ You can either **build the Docker image locally** or **pull the pre-built image 
 docker build -t kokoros .
 
 # Or pull pre-built image from GHCR
-docker pull ghcr.io/lucasjinreal/kokoros:latest
+docker pull ghcr.io/lucasjinreal/kokoros:main
 ```
 
 2. Run the image, passing options as described above
