@@ -117,11 +117,73 @@ The generated audio will be saved to `tmp/output.wav` by default. You can custom
 ./target/release/koko file poem.txt
 ```
 
-For a file with 3 lines of text, by default, speech audio files `tmp/output_0.wav`, `tmp/output_1.wav`, `tmp/output_2.wav` will be outputted. You can customize the save location with the `--output` or `-o` option, using `{line}` as the line number:
+ For a file with 3 lines of text, by default, speech audio files `tmp/output_0.wav`, `tmp/output_1.wav`, `tmp/output_2.wav` will be outputted. You can customize the save location with the `--output` or `-o` option, using `{line}` as the line number:
 
 ```
 ./target/release/koko file lyrics.txt -o "song/lyric_{line}.wav"
 ```
+
+### Word-level timestamps (TSV sidecar)
+
+Add `--timestamps` to produce a `.tsv` file with per-word timings alongside the WAV output. The TSV contains three columns: `word`, `start_sec`, `end_sec`.
+
+Text mode example:
+
+```
+./target/release/koko text \
+  --output tmp/output.wav \
+  --timestamps \
+  "Hello from the timestamped model"
+```
+
+This creates:
+- `tmp/output.wav`
+- `tmp/output.tsv`
+
+File mode example (one pair per line):
+
+```
+./target/release/koko file input.txt \
+  --output tmp/line_{line}.wav \
+  --timestamps
+```
+
+For each line N, this creates `tmp/line_N.wav` and `tmp/line_N.tsv`.
+
+Notes:
+- The sidecar path is derived automatically by replacing the `.wav` extension with `.tsv`.
+- Sample rate is 24 kHz by default; times are in seconds with 3 decimal places.
+
+#### Quick start with the Hugging Face timestamped model (copy-paste)
+
+Copy and paste the following to run an end-to-end example using the timestamped Kokoro ONNX model hosted on Hugging Face. This will download the model and voice data to the expected paths and generate both `output.wav` and `output.tsv`.
+
+```
+mkdir -p checkpoints data tmp
+
+# 1) Download the timestamped ONNX model from Hugging Face
+curl -L \
+  "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX-timestamped/resolve/main/onnx/model.onnx" \
+  -o checkpoints/kokoro-v1.0.onnx
+
+# 2) Download voices data (single binary used by existing models)
+curl -L \
+  "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" \
+  -o data/voices-v1.0.bin
+
+# 3) Build the binary
+cargo build --release
+
+# 4) Run: generates tmp/output.wav and tmp/output.tsv
+./target/release/koko text \
+  --output tmp/output.wav \
+  --timestamps \
+  "Hello from the timestamped model"
+```
+
+Notes:
+- We keep using the unified `voices-v1.0.bin`, which is compatible with the timestamped model.
+- If the files already exist in `checkpoints/` and `data/`, the CLI will use them directly.
 
 ### Parallel Processing Configuration
 
