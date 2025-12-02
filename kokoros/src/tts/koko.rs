@@ -208,12 +208,16 @@ impl TTSKoko {
             // F. Calculate Alignments
             if let Some(durations) = chunk_durations_opt {
                 let mut alignments = Vec::new();
+
                 // Model durations are in frames (hop=600 @ 24 kHz) ⇒ 40 frames/sec.
                 let frames_per_sec: f32 = 40.0;
 
-                // Include initial "silence tokens" time into the local time cursor. You already shift
-                // the durations index by `index_offset = 1 + silence_count`; here we also advance the
-                // cursor by the skipped frames so the first word starts at the actual audio time.
+                // Guard speed to avoid division by zero; timestamps should reflect the final render timeline.
+                let speed_safe = if speed > 1e-6 { speed } else { 1.0 };
+
+                // Include initial "silence tokens" time into the local time cursor. You already shift the
+                // durations index by `index_offset = 1 + silence_count`; here we also advance the cursor by
+                // the skipped frames so the first word starts at the actual audio time.
                 let mut chunk_time_cursor_frames: f32 = 0.0;
                 if silence_count > 0 {
                     let start = 1; // skip BOS
@@ -224,7 +228,7 @@ impl TTSKoko {
                     }
                 }
 
-                // Punctuation pause table in seconds (tune as needed; scale by speed if your audio does)
+                // Punctuation pause table in seconds (tune as needed). We scale by 1/speed so faster speech shortens pauses.
                 let punct_pause_s = |label: &str| -> f32 {
                     match label {
                         "." | "!" | "?" => 0.300, // 300 ms
@@ -241,8 +245,8 @@ impl TTSKoko {
                     // Punctuation items are separate in word_map with zero token span; account for pause.
                     let is_punct = word.len() == 1 && ".,!?:;!?".contains(word.as_str());
                     if is_punct {
-                        let pause_s = punct_pause_s(&word);
-                        // If audio scales pauses with speed, use: let pause_s = pause_s / speed.max(1e-6);
+                        // Scale pauses by 1/speed so timestamps match rendered audio when speech rate changes.
+                        let pause_s = punct_pause_s(&word) / speed_safe;
                         let pause_frames = pause_s * frames_per_sec;
                         let start_sec = chunk_time_cursor_frames / frames_per_sec;
                         let end_sec = (chunk_time_cursor_frames + pause_frames) / frames_per_sec;
@@ -253,7 +257,12 @@ impl TTSKoko {
 
                     // Normal word span: sum its frame durations and advance the cursor.
                     if adj_start < adj_end && adj_end <= durations.len() {
-                        let word_frames: f32 = durations[adj_start..adj_end].iter().sum();
+                        let mut word_frames: f32 = durations[adj_start..adj_end].iter().sum();
+
+                        // If your ONNX `durations` do NOT already include speed scaling, uncomment this line:
+                        // word_frames /= speed_safe;
+                        // (Leave it commented if the model already produces speed‑scaled durations.)
+
                         let start_sec = chunk_time_cursor_frames / frames_per_sec;
                         let end_sec = (chunk_time_cursor_frames + word_frames) / frames_per_sec;
                         alignments.push(WordAlignment { word, start_sec, end_sec });
@@ -261,21 +270,41 @@ impl TTSKoko {
                     }
                 }
 
-                // Optional sanity: ensure per-chunk alignment duration ~ audio seconds.
-                #[allow(unused)]
-                {
-                    let chunk_audio_sec = chunk_audio.len() as f32 / 24_000.0;
-                    let t_end_sec = chunk_time_cursor_frames / frames_per_sec;
-                    let diff_ms = ((t_end_sec - chunk_audio_sec) * 1000.0).abs();
+                // Per‑chunk closure: linearly scale the local alignment times to match this chunk’s audio length.
+                // This eliminates cumulative drift across chunks and prevents middle events from sliding late.
+                let t_end_sec = chunk_time_cursor_frames / frames_per_sec; // alignment‑derived duration (sec)
+                let chunk_audio_sec = chunk_audio.len() as f32 / 24_000.0; // audio duration (sec)
+
+                if t_end_sec > 0.0 {
+                    let s = (chunk_audio_sec / t_end_sec);
+                    // Optionally clamp extreme corrections; typical values should be close to 1.0
+                    let s_clamped = s.clamp(0.8, 1.25);
+                    if (s_clamped - 1.0).abs() > 0.005 { // >0.5% correction
+                        tracing::debug!(scale = s_clamped, "Per-chunk alignment scaling applied (speed-aware)");
+                        for al in &mut alignments {
+                            al.start_sec *= s_clamped;
+                            al.end_sec   *= s_clamped;
+                        }
+                    }
+
+                    // Optional sanity log after scaling
+                    let diff_ms = (((t_end_sec * s_clamped) - chunk_audio_sec) * 1000.0).abs();
                     if diff_ms > 10.0 {
                         tracing::warn!(
-                            chunk_audio_sec = chunk_audio_sec,
-                            t_end_sec = t_end_sec,
-                            diff_ms = diff_ms,
-                            "Alignment vs audio duration differ too much in chunk",
-                        );
+                chunk_t_end_sec = t_end_sec * s_clamped,
+                chunk_audio_sec,
+                diff_ms,
+                "Alignment vs audio duration still off after scaling",
+            );
+                    } else {
+                        tracing::debug!(
+                chunk_t_end_sec = t_end_sec * s_clamped,
+                chunk_audio_sec,
+                "Chunk alignment closure OK",
+            );
                     }
                 }
+
                 Ok(TtsOutput::Aligned(chunk_audio, alignments))
             } else {
                 Ok(TtsOutput::Audio(chunk_audio))
