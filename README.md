@@ -101,6 +101,7 @@ This will copy the `koko` binary to `/usr/local/bin` (making it available system
 ### Generate speech for some text
 
 ```
+mkdir -p tmp
 ./target/release/koko text "Hello, this is a TTS test"
 ```
 
@@ -293,10 +294,16 @@ echo "Suppose some other program was outputting lines of text" | ./target/releas
 
 ### With docker
 
-1. Build the image
+1. Build or Pull Docker Image
+
+You can either **build the Docker image locally** or **pull the pre-built image from GitHub Container Registry (GHCR)**.
 
 ```bash
+# Build locally
 docker build -t kokoros .
+
+# Or pull pre-built image from GHCR
+docker pull ghcr.io/lucasjinreal/kokoros:main
 ```
 
 2. Run the image, passing options as described above
