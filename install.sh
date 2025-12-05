@@ -1,5 +1,24 @@
 #!/bin/bash
 
+# Check for required dependencies
+if [[ "$(uname)" == "Darwin" ]]; then
+    if ! command -v brew &> /dev/null; then
+        echo "Error: Homebrew is required for automatic dependency installation."
+        echo "Please install Homebrew or manually install: pkg-config opus"
+        exit 1
+    fi
+
+    if ! command -v pkg-config &> /dev/null; then
+        echo "pkg-config not found. Installing via Homebrew..."
+        brew install pkg-config
+    fi
+
+    if ! brew list opus &> /dev/null; then
+        echo "opus not found. Installing via Homebrew..."
+        brew install opus
+    fi
+fi
+
 # Set variables
 VOICES_JSON_SRC="data/voices-v1.0.bin"
 VOICES_JSON_DEST="$HOME/.cache/kokoros/data.voices-v1.0.bin"
