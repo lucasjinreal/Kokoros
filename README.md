@@ -52,6 +52,20 @@ New Discord community: https://discord.gg/E566zfDWqD, Please join us if you inte
 - **_`2025.01.13`_**: Espeak-ng tokenizer and phonemizer supported! Kudos to [@mindreframer](https://github.com/mindreframer) ;
 - **_`2025.01.12`_**: Released `Kokoros`;
 
+## Prerequisites
+
+To build this project locally, you need the following system dependencies:
+
+### macOS
+```bash
+brew install pkg-config opus
+```
+
+### Linux (Ubuntu/Debian)
+```bash
+sudo apt-get install pkg-config libopus-dev
+```
+
 ## Installation
 
 1. Download the required model and voice data files:
