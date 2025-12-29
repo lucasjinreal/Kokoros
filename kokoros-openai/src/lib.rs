@@ -273,12 +273,47 @@ enum AudioFormat {
     Pcm,
 }
 
+/// Map OpenAI voice names to Kokoro voice names for backwards compatibility
+///
+/// OpenAI voices are mapped to their closest Kokoro equivalents:
+/// - Direct matches: alloy → af_alloy, echo → am_echo, nova → af_nova, onyx → am_onyx
+/// - Mapped voices: Other OpenAI voices are mapped to similar-sounding Kokoro voices
+fn map_openai_voice_to_kokoro(voice: &str) -> &str {
+    match voice.to_lowercase().as_str() {
+        // Direct matches (same name exists in both)
+        "alloy" => "af_alloy",
+        "echo" => "am_echo",
+        "nova" => "af_nova",
+        "onyx" => "am_onyx",
+        // Female OpenAI voices → Female Kokoro voices
+        "shimmer" => "af_sky",
+        "fable" => "af_bella",
+        "coral" => "af_nicole",
+        "sage" => "af_sarah",
+        "marin" => "af_river",
+        // Male OpenAI voices → Male Kokoro voices
+        "ash" => "am_adam",
+        "ballad" => "am_michael",
+        "verse" => "am_eric",
+        "cedar" => "am_liam",
+        // If not an OpenAI voice, return as-is (assume it's already a Kokoro voice)
+        _ => voice,
+    }
+}
+
 #[derive(Deserialize)]
 struct Voice(String);
 
 impl Default for Voice {
     fn default() -> Self {
         Self("af_sky".into())
+    }
+}
+
+impl Voice {
+    /// Get the Kokoro voice name, mapping from OpenAI voice names if necessary
+    fn to_kokoro_voice(&self) -> String {
+        map_openai_voice_to_kokoro(&self.0).to_string()
     }
 }
 
@@ -501,7 +536,7 @@ async fn handle_tts(
 
     let SpeechRequest {
         input,
-        voice: Voice(voice),
+        voice,
         response_format,
         speed: Speed(speed),
         initial_silence,
@@ -509,8 +544,11 @@ async fn handle_tts(
         ..
     } = speech_request;
 
+    // Map OpenAI voice names to Kokoro voice names
+    let voice = voice.to_kokoro_voice();
+
     // OpenAI-compliant behavior: Stream by default, only send complete file if stream: false
-    let should_stream = stream.unwrap_or(true); // Default to streaming like OpenAI
+    let should_stream = stream.unwrap_or(false); // Default to not streaming
 
     let colored_request_id = get_colored_request_id_with_relative(&request_id, request_start);
     debug!(
@@ -560,8 +598,8 @@ async fn handle_tts(
             ("audio/wav", wav_data, "WAV")
         }
         AudioFormat::Opus => {
-            let opus_data =
-                pcm_to_opus_ogg(&raw_audio, sample_rate).map_err(|e| SpeechError::OpusConversion(e))?;
+            let opus_data = pcm_to_opus_ogg(&raw_audio, sample_rate)
+                .map_err(|e| SpeechError::OpusConversion(e))?;
 
             ("audio/opus", opus_data, "OPUS")
         }
@@ -925,7 +963,26 @@ async fn handle_tts_streaming(
 async fn handle_voices(
     State((tts_single, _tts_instances)): State<(TTSKoko, Vec<TTSKoko>)>,
 ) -> Json<VoicesResponse> {
-    let voices = tts_single.get_available_voices();
+    let mut voices = tts_single.get_available_voices();
+
+    // Add OpenAI voice names for compatibility
+    let openai_voices = vec![
+        "alloy".to_string(),
+        "echo".to_string(),
+        "nova".to_string(),
+        "onyx".to_string(),
+        "shimmer".to_string(),
+        "fable".to_string(),
+        "coral".to_string(),
+        "sage".to_string(),
+        "marin".to_string(),
+        "ash".to_string(),
+        "ballad".to_string(),
+        "verse".to_string(),
+        "cedar".to_string(),
+    ];
+
+    voices.extend(openai_voices);
     Json(VoicesResponse { voices })
 }
 
@@ -949,6 +1006,12 @@ async fn handle_models() -> Json<ModelsResponse> {
         },
         ModelObject {
             id: "kokoro".to_string(),
+            object: "model".to_string(),
+            created: 1686935002,
+            owned_by: "kokoro".to_string(),
+        },
+        ModelObject {
+            id: "gpt-4o-mini-tts".to_string(),
             object: "model".to_string(),
             created: 1686935002,
             owned_by: "kokoro".to_string(),
@@ -977,6 +1040,12 @@ async fn handle_model(Path(model_id): Path<String>) -> Result<Json<ModelObject>,
         },
         "kokoro" => ModelObject {
             id: "kokoro".to_string(),
+            object: "model".to_string(),
+            created: 1686935002,
+            owned_by: "kokoro".to_string(),
+        },
+        "gpt-4o-mini-tts" => ModelObject {
+            id: "tts-1-hd".to_string(),
             object: "model".to_string(),
             created: 1686935002,
             owned_by: "kokoro".to_string(),
