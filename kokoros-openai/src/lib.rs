@@ -548,7 +548,7 @@ async fn handle_tts(
     let voice = voice.to_kokoro_voice();
 
     // OpenAI-compliant behavior: Stream by default, only send complete file if stream: false
-    let should_stream = stream.unwrap_or(true); // Default to streaming like OpenAI
+    let should_stream = stream.unwrap_or(false); // Default to not streaming
 
     let colored_request_id = get_colored_request_id_with_relative(&request_id, request_start);
     debug!(
