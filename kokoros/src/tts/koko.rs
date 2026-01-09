@@ -149,7 +149,7 @@ impl TTSKoko {
         mut mode: ExecutionMode,
     ) -> Result<Option<(Vec<f32>, Vec<WordAlignment>)>, Box<dyn std::error::Error>> {
 
-        let chunks = self.split_text_into_chunks(txt, 500);
+        let chunks = self.split_text_into_chunks(txt, 500, lan);
         let start_chunk_num = chunk_number_start.unwrap_or(0);
 
         let debug_prefix = format_debug_prefix(request_id, instance_id);
@@ -505,7 +505,7 @@ impl TTSKoko {
         (all_tokens, Vec::new())
     }
 
-    fn split_text_into_chunks(&self, text: &str, max_tokens: usize) -> Vec<String> {
+    fn split_text_into_chunks(&self, text: &str, max_tokens: usize, lan: &str) -> Vec<String> {
         let mut chunks = Vec::new();
 
         // First split by sentences - using common sentence ending punctuation
@@ -523,7 +523,7 @@ impl TTSKoko {
             // Convert to phonemes to check token count
             let sentence_phonemes = {
                 let _guard = ESPEAK_MUTEX.lock().unwrap();
-                text_to_phonemes(&sentence, "en", None, true, false)
+                text_to_phonemes(&sentence, lan, None, true, false)
                     .unwrap_or_default()
                     .join("")
             };
@@ -543,7 +543,7 @@ impl TTSKoko {
 
                     let test_phonemes = {
                         let _guard = ESPEAK_MUTEX.lock().unwrap();
-                        text_to_phonemes(&test_chunk, "en", None, true, false)
+                        text_to_phonemes(&test_chunk, lan, None, true, false)
                             .unwrap_or_default()
                             .join("")
                     };
@@ -567,7 +567,7 @@ impl TTSKoko {
                 let test_text = format!("{} {}", current_chunk, sentence);
                 let test_phonemes = {
                     let _guard = ESPEAK_MUTEX.lock().unwrap();
-                    text_to_phonemes(&test_text, "en", None, true, false)
+                    text_to_phonemes(&test_text, lan, None, true, false)
                         .unwrap_or_default()
                         .join("")
                 };
