@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use kokoros::{
     tts::koko::{TTSKoko, TTSOpts},
-    utils::wav::{write_audio_chunk, WavHeader},
+    utils::wav::{WavHeader, write_audio_chunk},
 };
 use std::net::{IpAddr, SocketAddr};
 use std::{
@@ -160,7 +160,10 @@ fn derive_tsv_path_from_wav(path: &str) -> String {
     let p = Path::new(path);
     if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
         if let Some(parent) = p.parent() {
-            return parent.join(format!("{stem}.tsv")).to_string_lossy().to_string();
+            return parent
+                .join(format!("{stem}.tsv"))
+                .to_string_lossy()
+                .to_string();
         }
         return format!("{stem}.tsv");
     }
@@ -168,7 +171,12 @@ fn derive_tsv_path_from_wav(path: &str) -> String {
     format!("{path}.tsv")
 }
 
-fn write_wav_file(path: &str, samples: &[f32], sample_rate: u32, mono: bool) -> std::io::Result<()> {
+fn write_wav_file(
+    path: &str,
+    samples: &[f32],
+    sample_rate: u32,
+    mono: bool,
+) -> std::io::Result<()> {
     use std::fs::File;
     use std::io::Write;
 
@@ -239,10 +247,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_timer(UnixTimestampFormatter)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let Cli {
@@ -372,7 +380,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Create multiple independent TTS instances for parallel processing
                 let mut tts_instances = Vec::new();
                 for i in 0..instances {
-                    tracing::info!("Initializing TTS instance [{}] ({}/{})", format!("{:02x}", i), i + 1, instances);
+                    tracing::info!(
+                        "Initializing TTS instance [{}] ({}/{})",
+                        format!("{:02x}", i),
+                        i + 1,
+                        instances
+                    );
                     let instance = TTSKoko::new(&model_path, &data_path).await;
                     tts_instances.push(instance);
                 }
@@ -407,7 +420,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     // Process the line and get audio data
-                    match tts.tts_raw_audio(&stripped_line, &lan, &style, speed, initial_silence, None, None, None) {
+                    match tts.tts_raw_audio(
+                        &stripped_line,
+                        &lan,
+                        &style,
+                        speed,
+                        initial_silence,
+                        None,
+                        None,
+                        None,
+                    ) {
                         Ok(raw_audio) => {
                             // Write the raw audio samples directly
                             write_audio_chunk(&mut stdout, &raw_audio)?;

@@ -1,9 +1,9 @@
+use ort::execution_providers::cpu::CPUExecutionProvider;
 #[cfg(feature = "cuda")]
 use ort::execution_providers::cuda::CUDAExecutionProvider;
-use ort::execution_providers::cpu::CPUExecutionProvider;
-use ort::session::builder::SessionBuilder;
-use ort::session::Session;
 use ort::logging::LogLevel;
+use ort::session::Session;
+use ort::session::builder::SessionBuilder;
 
 pub trait OrtBase {
     fn load_model(&mut self, model_path: String) -> Result<(), String> {
