@@ -42,7 +42,7 @@ impl TtsOutput {
     pub fn raw_output(self) -> (Vec<f32>, Option<Vec<WordAlignment>>) {
         match self {
             TtsOutput::Audio(a) => (a, None),
-            TtsOutput::Aligned(a, b) => (a, Some(b))
+            TtsOutput::Aligned(a, b) => (a, Some(b)),
         }
     }
 }
@@ -148,14 +148,15 @@ impl TTSKoko {
         chunk_number_start: Option<usize>,
         mut mode: ExecutionMode,
     ) -> Result<Option<(Vec<f32>, Vec<WordAlignment>)>, Box<dyn std::error::Error>> {
-
         let chunks = self.split_text_into_chunks(txt, 500, lan);
+      
         let start_chunk_num = chunk_number_start.unwrap_or(0);
 
         let debug_prefix = format_debug_prefix(request_id, instance_id);
 
-        let process_one_chunk = |chunk: &str, chunk_num: usize| -> Result<TtsOutput, Box<dyn std::error::Error>> {
-
+        let process_one_chunk = |chunk: &str,
+                                 chunk_num: usize|
+         -> Result<TtsOutput, Box<dyn std::error::Error>> {
             let chunk_info = format!("Chunk: {}, ", chunk_num);
             tracing::debug!("{} {}text: '{}'", debug_prefix, chunk_info, chunk);
 
@@ -174,7 +175,12 @@ impl TTSKoko {
             };
 
             // Log token count (helpful for debugging context limits)
-            tracing::debug!("{} {}tokens generated: {}", debug_prefix, chunk_info, tokens.len());
+            tracing::debug!(
+                "{} {}tokens generated: {}",
+                debug_prefix,
+                chunk_info,
+                tokens.len()
+            );
 
             // B. Silence
             let silence_count = initial_silence.unwrap_or(0);
@@ -232,9 +238,9 @@ impl TTSKoko {
                 let punct_pause_s = |label: &str| -> f32 {
                     match label {
                         "." | "!" | "?" => 0.300, // 300 ms
-                        ","                 => 0.150, // 150 ms
-                        ";" | ":"           => 0.200,
-                        _                    => 0.0,
+                        "," => 0.150,             // 150 ms
+                        ";" | ":" => 0.200,
+                        _ => 0.0,
                     }
                 };
 
@@ -250,7 +256,11 @@ impl TTSKoko {
                         let pause_frames = pause_s * frames_per_sec;
                         let start_sec = chunk_time_cursor_frames / frames_per_sec;
                         let end_sec = (chunk_time_cursor_frames + pause_frames) / frames_per_sec;
-                        alignments.push(WordAlignment { word: word.clone(), start_sec, end_sec });
+                        alignments.push(WordAlignment {
+                            word: word.clone(),
+                            start_sec,
+                            end_sec,
+                        });
                         chunk_time_cursor_frames += pause_frames;
                         continue;
                     }
@@ -265,7 +275,11 @@ impl TTSKoko {
 
                         let start_sec = chunk_time_cursor_frames / frames_per_sec;
                         let end_sec = (chunk_time_cursor_frames + word_frames) / frames_per_sec;
-                        alignments.push(WordAlignment { word, start_sec, end_sec });
+                        alignments.push(WordAlignment {
+                            word,
+                            start_sec,
+                            end_sec,
+                        });
                         chunk_time_cursor_frames += word_frames;
                     }
                 }
@@ -279,11 +293,15 @@ impl TTSKoko {
                     let s = (chunk_audio_sec / t_end_sec);
                     // Optionally clamp extreme corrections; typical values should be close to 1.0
                     let s_clamped = s.clamp(0.8, 1.25);
-                    if (s_clamped - 1.0).abs() > 0.005 { // >0.5% correction
-                        tracing::debug!(scale = s_clamped, "Per-chunk alignment scaling applied (speed-aware)");
+                    if (s_clamped - 1.0).abs() > 0.005 {
+                        // >0.5% correction
+                        tracing::debug!(
+                            scale = s_clamped,
+                            "Per-chunk alignment scaling applied (speed-aware)"
+                        );
                         for al in &mut alignments {
                             al.start_sec *= s_clamped;
-                            al.end_sec   *= s_clamped;
+                            al.end_sec *= s_clamped;
                         }
                     }
 
@@ -291,17 +309,17 @@ impl TTSKoko {
                     let diff_ms = (((t_end_sec * s_clamped) - chunk_audio_sec) * 1000.0).abs();
                     if diff_ms > 10.0 {
                         tracing::warn!(
-                chunk_t_end_sec = t_end_sec * s_clamped,
-                chunk_audio_sec,
-                diff_ms,
-                "Alignment vs audio duration still off after scaling",
-            );
+                            chunk_t_end_sec = t_end_sec * s_clamped,
+                            chunk_audio_sec,
+                            diff_ms,
+                            "Alignment vs audio duration still off after scaling",
+                        );
                     } else {
                         tracing::debug!(
-                chunk_t_end_sec = t_end_sec * s_clamped,
-                chunk_audio_sec,
-                "Chunk alignment closure OK",
-            );
+                            chunk_t_end_sec = t_end_sec * s_clamped,
+                            chunk_audio_sec,
+                            "Chunk alignment closure OK",
+                        );
                     }
                 }
 
@@ -354,7 +372,11 @@ impl TTSKoko {
     }
 
     /// Prosody-Aware Tokenization ---
-    fn tokenize_with_alignment(&self, text: &str, lan: &str) -> (Vec<i64>, Vec<(String, usize, usize)>) {
+    fn tokenize_with_alignment(
+        &self,
+        text: &str,
+        lan: &str,
+    ) -> (Vec<i64>, Vec<(String, usize, usize)>) {
         // We will produce tokens from the full, context-aware phonemes (best prosody)
         // and build an alignment map by estimating per-word token spans using
         // per-word phoneme tokenization. This keeps audio natural while providing
@@ -376,9 +398,9 @@ impl TTSKoko {
         fn split_words_and_punct(s: &str) -> Vec<String> {
             let mut out = Vec::new();
             for raw in s.split_whitespace() {
-                let mut start = 0usize;
-                let mut end = raw.len();
                 let chars: Vec<char> = raw.chars().collect();
+                let mut start = 0usize;
+                let mut end = chars.len();
 
                 // Leading punctuation
                 while start < end {
@@ -455,11 +477,18 @@ impl TTSKoko {
             let mut remaining = target_len.saturating_sub(new_sum);
             fractional.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             for (i, _) in fractional {
-                if remaining == 0 { break; }
+                if remaining == 0 {
+                    break;
+                }
                 adjusted_counts[i] += 1;
                 remaining -= 1;
             }
-            tracing::debug!("Alignment: rescaled per-item token counts from {} to {} to match durations length {}.", sum_counts, adjusted_counts.iter().sum::<usize>(), target_len);
+            tracing::debug!(
+                "Alignment: rescaled per-item token counts from {} to {} to match durations length {}.",
+                sum_counts,
+                adjusted_counts.iter().sum::<usize>(),
+                target_len
+            );
             sum_counts = adjusted_counts.iter().sum();
         }
 
@@ -482,7 +511,9 @@ impl TTSKoko {
 
         // If our mapping under-ran due to rounding issues, extend the last non-punct item to cover all tokens
         if cursor < target_len {
-            if let Some(last_non_punct_pos) = (0..word_map.len()).rev().find(|&i| !(per_item_is_punct[i])) {
+            if let Some(last_non_punct_pos) =
+                (0..word_map.len()).rev().find(|&i| !(per_item_is_punct[i]))
+            {
                 let (w, s, _e) = &word_map[last_non_punct_pos];
                 word_map[last_non_punct_pos] = (w.clone(), *s, target_len);
             }
@@ -494,7 +525,11 @@ impl TTSKoko {
 
     /// Fast tokenization path for audio-only models (no timestamps)
     /// Performs a single eSpeak phonemization for the full text and returns tokens with an empty word map.
-    fn tokenize_full_no_alignment(&self, text: &str, lan: &str) -> (Vec<i64>, Vec<(String, usize, usize)>) {
+    fn tokenize_full_no_alignment(
+        &self,
+        text: &str,
+        lan: &str,
+    ) -> (Vec<i64>, Vec<(String, usize, usize)>) {
         let full_phonemes = {
             let _guard = ESPEAK_MUTEX.lock().unwrap();
             text_to_phonemes(text, lan, None, true, false)
@@ -727,7 +762,7 @@ impl TTSKoko {
             request_id,
             instance_id,
             chunk_number,
-            ExecutionMode::Batch
+            ExecutionMode::Batch,
         )
     }
 
@@ -808,7 +843,7 @@ impl TTSKoko {
         mut chunk_callback: F,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
-    // CHANGE: Callback accepts TtsOutput instead of just Vec<f32>
+        // CHANGE: Callback accepts TtsOutput instead of just Vec<f32>
         F: FnMut((Vec<f32>, Vec<WordAlignment>)) -> Result<(), Box<dyn std::error::Error>>,
     {
         let mut adapter = |output: TtsOutput| -> Result<(), Box<dyn std::error::Error>> {
@@ -1107,7 +1142,14 @@ impl TTSKokoParallel {
     ) -> Result<Option<(Vec<f32>, Vec<WordAlignment>)>, Box<dyn Error>> {
         let wrapper = self.get_tts_wrapper(model_instance);
         wrapper.tts_timestamped_raw_audio(
-            text, language, style_name, speed, initial_silence, request_id, instance_id, chunk_number
+            text,
+            language,
+            style_name,
+            speed,
+            initial_silence,
+            request_id,
+            instance_id,
+            chunk_number,
         )
     }
 
@@ -1127,8 +1169,14 @@ impl TTSKokoParallel {
         let wrapper = self.get_tts_wrapper(model_instance);
 
         wrapper.tts_raw_audio(
-            text, language, style_name, speed,
-            initial_silence, request_id, instance_id, chunk_number
+            text,
+            language,
+            style_name,
+            speed,
+            initial_silence,
+            request_id,
+            instance_id,
+            chunk_number,
         )
     }
 
