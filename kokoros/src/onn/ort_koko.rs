@@ -54,7 +54,7 @@ impl ModelStrategy {
 
 impl OrtBase for OrtKoko {
     fn set_sess(&mut self, sess: Session) {
-        let output_count = sess.outputs.len();
+        let output_count = sess.outputs().len();
 
         let strategy = if output_count > 1 {
             tracing::info!(
