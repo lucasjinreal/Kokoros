@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.86.0-slim-bookworm AS builderrs
+FROM rust:1.88.0-slim-trixie AS builderrs
 
 RUN apt-get update -qq && apt-get install -qq -y wget pkg-config libssl-dev clang git cmake && rustup component add rustfmt
 
