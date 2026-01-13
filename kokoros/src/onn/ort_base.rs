@@ -1,6 +1,4 @@
-use ort::execution_providers::cpu::CPUExecutionProvider;
-#[cfg(feature = "cuda")]
-use ort::execution_providers::cuda::CUDAExecutionProvider;
+use ort::ep;
 use ort::logging::LogLevel;
 use ort::session::Session;
 use ort::session::builder::SessionBuilder;
@@ -8,10 +6,10 @@ use ort::session::builder::SessionBuilder;
 pub trait OrtBase {
     fn load_model(&mut self, model_path: String) -> Result<(), String> {
         #[cfg(feature = "cuda")]
-        let providers = [CUDAExecutionProvider::default().build()];
+        let providers = [ep::CUDA::default().build()];
 
         #[cfg(not(feature = "cuda"))]
-        let providers = [CPUExecutionProvider::default().build()];
+        let providers = [ep::CPU::default().build()];
 
         match SessionBuilder::new() {
             Ok(builder) => {
@@ -32,12 +30,12 @@ pub trait OrtBase {
     fn print_info(&self) {
         if let Some(session) = self.sess() {
             eprintln!("Input names:");
-            for input in &session.inputs {
-                eprintln!("  - {}", input.name);
+            for input in session.inputs() {
+                eprintln!("  - {}", input.name());
             }
             eprintln!("Output names:");
-            for output in &session.outputs {
-                eprintln!("  - {}", output.name);
+            for output in session.outputs() {
+                eprintln!("  - {}", output.name());
             }
 
             #[cfg(feature = "cuda")]
