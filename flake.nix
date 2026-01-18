@@ -23,11 +23,6 @@
           extensions = [ "rust-src" "rust-analyzer" ];
         };
 
-        # ONNX Runtime with CUDA support
-        onnxruntimeCuda = pkgs.onnxruntime.override {
-          cudaSupport = true;
-        };
-
         nativeBuildInputs = with pkgs; [
           rustToolchain
           pkg-config
@@ -52,12 +47,9 @@
           apple-sdk_15
         ];
 
-        buildInputs = commonBuildInputs ++ [ pkgs.onnxruntime ];
-        buildInputsCuda = commonBuildInputs ++ [ onnxruntimeCuda ];
-
         commonEnv = {
           RUST_BACKTRACE = "1";
-          PKG_CONFIG_PATH = pkgs.lib.makeSearchPath "lib/pkgconfig" buildInputs;
+          PKG_CONFIG_PATH = pkgs.lib.makeSearchPath "lib/pkgconfig" commonBuildInputs;
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
             "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
@@ -67,12 +59,12 @@
       in
       {
         devShells.default = pkgs.mkShell {
-          inherit nativeBuildInputs buildInputs;
+          inherit nativeBuildInputs;
+          buildInputs = commonBuildInputs;
 
           env = commonEnv // {
-            ORT_STRATEGY = "system";
-            ORT_LIB_LOCATION = "${pkgs.onnxruntime}/lib";
-            ORT_PREFER_DYNAMIC_LINK = "1";
+            # Use download strategy since nixpkgs onnxruntime (1.22.2) is too old for ort 2.0.0-rc.11 (needs 1.23+)
+            ORT_STRATEGY = "download";
           };
 
           shellHook = ''
@@ -82,16 +74,14 @@
         };
 
         devShells.cuda = pkgs.mkShell {
-          nativeBuildInputs = nativeBuildInputs;
-          buildInputs = buildInputsCuda;
+          inherit nativeBuildInputs;
+          buildInputs = commonBuildInputs;
 
           env = commonEnv // {
-            ORT_STRATEGY = "system";
-            ORT_LIB_LOCATION = "${onnxruntimeCuda}/lib";
-            ORT_PREFER_DYNAMIC_LINK = "1";
+            # Use download strategy since nixpkgs onnxruntime (1.22.2) is too old for ort 2.0.0-rc.11 (needs 1.23+)
+            ORT_STRATEGY = "download";
             # Add CUDA to library path for runtime
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-              onnxruntimeCuda
               pkgs.cudaPackages.cudatoolkit
               pkgs.cudaPackages.cudnn
             ];
