@@ -65,6 +65,8 @@
           env = commonEnv // {
             # Use download strategy since nixpkgs onnxruntime (1.22.2) is too old for ort 2.0.0-rc.11 (needs 1.23+)
             ORT_STRATEGY = "download";
+            # Set RPATH to $ORIGIN so binaries can find ONNX Runtime libraries in the same directory
+            CARGO_BUILD_RUSTFLAGS = "-C link-arg=-Wl,-rpath,$ORIGIN";
           };
 
           shellHook = ''
@@ -80,6 +82,8 @@
           env = commonEnv // {
             # Use download strategy since nixpkgs onnxruntime (1.22.2) is too old for ort 2.0.0-rc.11 (needs 1.23+)
             ORT_STRATEGY = "download";
+            # Set RPATH to $ORIGIN so binaries can find ONNX Runtime libraries in the same directory
+            CARGO_BUILD_RUSTFLAGS = "-C link-arg=-Wl,-rpath,$ORIGIN";
             # Add CUDA to library path for runtime
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
               pkgs.cudaPackages.cudatoolkit
