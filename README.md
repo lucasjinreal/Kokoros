@@ -115,7 +115,7 @@ or with CUDA support:
 
 ```bash
 nix develop .#cuda
-cargo build --release
+cargo build --features kokoros/cuda --release
 ```
 
 ## Usage
