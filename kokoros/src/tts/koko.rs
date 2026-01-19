@@ -149,7 +149,7 @@ impl TTSKoko {
         mut mode: ExecutionMode,
     ) -> Result<Option<(Vec<f32>, Vec<WordAlignment>)>, Box<dyn std::error::Error>> {
         let chunks = self.split_text_into_chunks(txt, 500, lan);
-      
+
         let start_chunk_num = chunk_number_start.unwrap_or(0);
 
         let debug_prefix = format_debug_prefix(request_id, instance_id);
@@ -267,7 +267,7 @@ impl TTSKoko {
 
                     // Normal word span: sum its frame durations and advance the cursor.
                     if adj_start < adj_end && adj_end <= durations.len() {
-                        let mut word_frames: f32 = durations[adj_start..adj_end].iter().sum();
+                        let word_frames: f32 = durations[adj_start..adj_end].iter().sum();
 
                         // If your ONNX `durations` do NOT already include speed scaling, uncomment this line:
                         // word_frames /= speed_safe;
@@ -290,7 +290,7 @@ impl TTSKoko {
                 let chunk_audio_sec = chunk_audio.len() as f32 / 24_000.0; // audio duration (sec)
 
                 if t_end_sec > 0.0 {
-                    let s = (chunk_audio_sec / t_end_sec);
+                    let s = chunk_audio_sec / t_end_sec;
                     // Optionally clamp extreme corrections; typical values should be close to 1.0
                     let s_clamped = s.clamp(0.8, 1.25);
                     if (s_clamped - 1.0).abs() > 0.005 {
@@ -489,7 +489,6 @@ impl TTSKoko {
                 adjusted_counts.iter().sum::<usize>(),
                 target_len
             );
-            sum_counts = adjusted_counts.iter().sum();
         }
 
         // 5) Build the word_map by assigning contiguous spans across the token stream.

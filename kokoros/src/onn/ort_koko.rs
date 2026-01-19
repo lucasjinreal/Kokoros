@@ -5,7 +5,7 @@ use crate::utils::debug::format_debug_prefix;
 use model_schema::v1_0_timestamped::DURATIONS;
 use ndarray::{ArrayBase, IxDyn, OwnedRepr};
 use ort::{
-    session::{Session, SessionInputValue, SessionInputs, SessionOutputs},
+    session::{Session, SessionInputValue, SessionInputs},
     value::{Tensor, Value},
 };
 use ort_base::OrtBase;
