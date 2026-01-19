@@ -459,7 +459,7 @@ impl TTSKoko {
         //    If sums differ (likely due to coarticulation/context differences),
         //    rescale the counts to match the full length, keeping the distribution similar.
         let target_len = all_tokens.len();
-        let mut sum_counts: usize = per_item_token_counts.iter().sum();
+        let sum_counts: usize = per_item_token_counts.iter().sum();
 
         let mut adjusted_counts: Vec<usize> = per_item_token_counts.clone();
         if sum_counts != target_len && sum_counts > 0 {
