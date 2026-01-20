@@ -10,6 +10,7 @@ lazy_static! {
 }
 
 // Placeholder for the EspeakBackend struct
+#[allow(dead_code)]
 struct EspeakBackend {
     language: String,
     preserve_punctuation: bool,

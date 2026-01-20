@@ -379,6 +379,7 @@ struct SpeechRequest {
 }
 
 /// Async TTS worker task
+#[allow(dead_code)]
 #[derive(Debug)]
 struct TTSTask {
     id: usize,
@@ -390,6 +391,7 @@ struct TTSTask {
 }
 
 /// Streaming session manager
+#[allow(dead_code)]
 #[derive(Debug)]
 struct StreamingSession {
     session_id: Uuid,
