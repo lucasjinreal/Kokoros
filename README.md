@@ -104,6 +104,20 @@ bash install.sh
 
 This will copy the `koko` binary to `/usr/local/bin` (making it available system-wide as `koko`) and copy the voice data to `$HOME/.cache/kokoros/`.
 
+## Build using Nix
+
+```bash
+nix develop
+cargo build --release
+```
+
+or with CUDA support:
+
+```bash
+nix develop .#cuda
+cargo build --features kokoros/cuda --release
+```
+
 ## Usage
 
 ### View available options
