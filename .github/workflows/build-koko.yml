@@ -1,0 +1,124 @@
+name: Build Kokoros
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a new release'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: windows-x86_64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
+
+    - name: Install deps (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget pkg-config libssl-dev clang git cmake libsonic-dev libpcaudio-dev libopus-dev
+
+    - name: Install deps (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        echo "Nothing to do"
+
+    - name: Build project
+      run: |
+        cargo build --release --target ${{ matrix.target }}
+
+    - name: Prepare archive
+      shell: bash
+      run: |
+        mkdir -p archive/${{ matrix.archive }}
+        cp target/${{ matrix.target }}/release/koko archive/${{ matrix.archive }}/
+        cp -pr espeak-ng-data archive/${{ matrix.archive }}/espeak-ng-data
+
+    - name: Bundle deps (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      shell: bash
+      run: |
+        chmod +x extract_libs.sh
+        cd archive/${{ matrix.archive }}
+        ../../extract_libs.sh koko
+
+    - name: Bundle deps (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        echo "Nothing to do"
+
+    - name: Compress archive
+      shell: bash
+      run: |
+        cd archive
+        tar -czf kokoros-${{ matrix.archive }}.tar.gz ${{ matrix.archive }}
+
+    - name: Upload archive
+      uses: actions/upload-artifact@v4
+      with:
+        name: kokoros-build-${{ matrix.archive }}
+        path: archive/${{ matrix.archive }}/
+        retention-days: 7
+
+    - name: Upload release asset
+      if: github.event.inputs.create_release == 'true'
+      uses: actions/github-script@v7
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        script: |
+          const fs = require('fs').promises;
+          // Check if release exists
+          const releases = await github.rest.repos.listReleases({
+            owner: context.repo.owner,
+            repo: context.repo.repo
+          });
+          
+          let releaseId = releases.data.find(r => r.tag_name === `b${{ github.run_number }}`)?.id;
+          
+          if (!releaseId) {
+            // If no release exists, create one (only for Linux)
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `b${{ github.run_number }}`,
+              name: `b${{ github.run_number }}`,
+              draft: false,
+              prerelease: false
+            });
+            releaseId = release.data.id;
+          }
+          
+          const assetData = await fs.readFile('./archive/kokoros-${{ matrix.archive }}.tar.gz');
+          const assetName = 'kokoros-${{ matrix.archive }}.tar.gz';
+          
+          const response = await github.rest.repos.uploadReleaseAsset({
+            name: assetName,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            release_id: releaseId,
+            data: assetData
+          });
+          
+          console.log('Uploaded asset:', response.data.browser_download_url);
