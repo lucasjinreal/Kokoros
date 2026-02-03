@@ -10,10 +10,6 @@ fn main() {
         println!("cargo:rustc-link-search=/usr/lib");
         println!("cargo:rustc-link-search=/usr/lib/x86_64-linux-gnu");
         println!("cargo:rustc-link-search=/usr/lib64");
-
-        // Link against required system libraries
-        println!("cargo:rustc-link-lib=dylib=sonic");
-        println!("cargo:rustc-link-lib=dylib=pcaudio");
     }
 
     // macOS specific settings

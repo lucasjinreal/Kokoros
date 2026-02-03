@@ -37,7 +37,7 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget pkg-config libssl-dev clang git cmake libsonic-dev libpcaudio-dev libopus-dev
+        sudo apt-get install -y wget pkg-config libssl-dev clang git cmake
 
     - name: Install deps (Windows)
       if: matrix.os == 'windows-latest'
@@ -54,19 +54,6 @@ jobs:
         mkdir -p archive/${{ matrix.archive }}
         cp target/${{ matrix.target }}/release/koko archive/${{ matrix.archive }}/
         cp -pr espeak-ng-data archive/${{ matrix.archive }}/espeak-ng-data
-
-    - name: Bundle deps (Linux)
-      if: matrix.os == 'ubuntu-latest'
-      shell: bash
-      run: |
-        chmod +x extract_libs.sh
-        cd archive/${{ matrix.archive }}
-        ../../extract_libs.sh koko
-
-    - name: Bundle deps (Windows)
-      if: matrix.os == 'windows-latest'
-      run: |
-        echo "Nothing to do"
 
     - name: Compress archive
       shell: bash
