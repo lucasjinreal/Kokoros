@@ -12,7 +12,7 @@
 //!
 //! ## OpenAI API Compatibility Limitations
 //! - `return_download_link`: Not implemented (files are streamed directly)
-//! - `lang_code`: Not implemented (language auto-detected from voice prefix)
+//! - `lang_code`: Language code for phonemization (defaults to first letter of voice name)
 //! - `volume_multiplier`: Not implemented (audio returned at original levels)
 //! - `download_format`: Not implemented (only response_format used)
 //! - `normalization_options`: Not implemented (basic text processing only)
@@ -301,6 +301,31 @@ fn map_openai_voice_to_kokoro(voice: &str) -> &str {
     }
 }
 
+fn get_language_code(lang_code: Option<&str>, voice: &str) -> String {
+    lang_code.map(|s| s.to_string()).unwrap_or_else(|| {
+        let prefix = voice
+            .chars()
+            .next()
+            .unwrap_or('a')
+            .to_lowercase()
+            .next()
+            .unwrap();
+        match prefix {
+            'a' => "en-us",
+            'b' => "en-gb",
+            'p' => "pt-br",
+            'j' => "ja",
+            'z' => "cmn",
+            'f' => "fr-fr",
+            'h' => "hi",
+            'i' => "it",
+            'e' => "es",
+            _ => "en-us",
+        }
+        .to_string()
+    })
+}
+
 #[derive(Deserialize)]
 struct Voice(String);
 
@@ -357,9 +382,7 @@ struct SpeechRequest {
     #[allow(dead_code)]
     return_download_link: Option<bool>,
 
-    /// Language code for text processing (not implemented)
     #[serde(default)]
-    #[allow(dead_code)]
     lang_code: Option<String>,
 
     /// Volume multiplier for output audio (not implemented)
@@ -387,6 +410,7 @@ struct TTSTask {
     voice: String,
     speed: f32,
     initial_silence: Option<usize>,
+    language: String,
     result_tx: mpsc::UnboundedSender<(usize, Vec<u8>)>,
 }
 
@@ -543,11 +567,13 @@ async fn handle_tts(
         speed: Speed(speed),
         initial_silence,
         stream,
+        lang_code,
         ..
     } = speech_request;
 
     // Map OpenAI voice names to Kokoro voice names
     let voice = voice.to_kokoro_voice();
+    let language = get_language_code(lang_code.as_deref(), &voice);
 
     // OpenAI-compliant behavior: Stream by default, only send complete file if stream: false
     let should_stream = stream.unwrap_or(false); // Default to not streaming
@@ -566,6 +592,7 @@ async fn handle_tts(
             response_format,
             speed,
             initial_silence,
+            language.clone(),
             request_id,
             request_start,
         )
@@ -576,7 +603,7 @@ async fn handle_tts(
     let raw_audio = tts_single
         .tts_raw_audio(
             &input,
-            "en-us",
+            &language,
             &voice,
             speed,
             initial_silence,
@@ -657,6 +684,7 @@ async fn handle_tts_streaming(
     response_format: AudioFormat,
     speed: f32,
     initial_silence: Option<usize>,
+    language: String,
     request_id: String,
     request_start: Instant,
 ) -> Result<Response, SpeechError> {
@@ -718,6 +746,7 @@ async fn handle_tts_streaming(
             voice: voice.clone(),
             speed,
             initial_silence: if id == 0 { initial_silence } else { None },
+            language: language.clone(),
             result_tx: audio_tx.clone(),
         };
 
@@ -762,6 +791,7 @@ async fn handle_tts_streaming(
                         let voice = task.voice.clone();
                         let speed = task.speed;
                         let initial_silence = task.initial_silence;
+                        let language = task.language.clone();
                         let chunk_num = chunk_counter;
 
                         // Spawn parallel processing
@@ -775,7 +805,7 @@ async fn handle_tts_streaming(
                             let result = tokio::task::spawn_blocking(move || {
                                 let audio_result = tts_instance.tts_raw_audio(
                                     &chunk_text,
-                                    "en-us",
+                                    &language,
                                     &voice,
                                     speed,
                                     initial_silence,
