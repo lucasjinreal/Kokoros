@@ -244,6 +244,7 @@ fn write_tsv(path: &str, alignments: &[(String, f32, f32)]) -> std::io::Result<(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with Unix timestamp format and environment-based log level
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_timer(UnixTimestampFormatter)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
